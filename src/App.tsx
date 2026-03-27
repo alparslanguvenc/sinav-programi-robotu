@@ -620,7 +620,7 @@ export function AppShell({
           <div className="file-drop-overlay__panel">
             <strong>Ders programını buraya bırakın</strong>
             <span>Excel, PDF ve Word dosyalarından otomatik sınav taslağı oluşturulur.</span>
-            <span>Aktif okul profili varsa ders, sınıf, hoca ve derslik bilgileri onunla eşleştirilir.</span>
+            <span>Aktif okul profili varsa bölüm, ders, sınıf, hoca ve derslik bilgileri onunla eşleştirilir.</span>
           </div>
         </div>
       ) : null}
@@ -696,7 +696,7 @@ export function AppShell({
                 <div>
                   <h2>Çizelge</h2>
                   <p>
-                    Kartları havuzdan çizelgeye, çizelgeden tekrar havuza veya başka bir slota taşıyabilirsiniz. Daha sıkı görünüm için `Boyut` ayarını küçültün.
+                    Kartları havuzdan çizelgeye, çizelgeden tekrar havuza veya başka bir slota taşıyabilirsiniz. Aynı sınıf yılı farklı bölümlerde paylaşılıyorsa kart üstündeki program bilgisi çakışma hesabına dahil edilir.
                   </p>
                 </div>
               </div>

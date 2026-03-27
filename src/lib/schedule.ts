@@ -104,6 +104,38 @@ export const parseSlotKey = (slotKey: string) => {
 
 const STANDARD_CLASS_YEAR_PATTERN = /^(\d+)\s*\.\s*S$/i;
 const STANDARD_CLASS_LABEL_PATTERN = /^(\d+)\s*\.\s*Sınıf$/i;
+const PROGRAM_SEPARATOR_PATTERN = /[,;\n]+/g;
+
+const sanitizeProgram = (value: string) => value.trim().replace(/\s+/g, " ");
+
+export const normalizePrograms = (programs: string[]) => {
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+
+  for (const program of programs) {
+    const trimmed = sanitizeProgram(program);
+
+    if (!trimmed) {
+      continue;
+    }
+
+    const key = trimmed.toLocaleLowerCase("tr");
+
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    normalized.push(trimmed);
+  }
+
+  return normalized;
+};
+
+export const parseProgramsInput = (value: string) =>
+  normalizePrograms(value.split(PROGRAM_SEPARATOR_PATTERN));
+
+export const formatPrograms = (programs: string[]) => normalizePrograms(programs).join(", ");
 
 export const normalizeClassYear = (value: string) => {
   const trimmed = value.trim().replace(/\s+/g, " ");
@@ -149,6 +181,12 @@ export const formatClassLabel = (classYear: string) => {
   return match ? `${match[1]}.Sınıf` : normalized;
 };
 
+export const formatAudienceLabel = (input: Pick<ExamCard, "classYear" | "programs">) => {
+  const classLabel = formatClassLabel(input.classYear);
+  const programsText = formatPrograms(input.programs);
+  return programsText ? `${programsText} · ${classLabel}` : classLabel;
+};
+
 export const formatLocationText = (exam: Pick<ExamCard, "locationText" | "rooms">) =>
   exam.locationText?.trim() || formatRooms(exam.rooms) || "Belirlenecek";
 
@@ -158,11 +196,14 @@ export const formatRooms = (rooms: string[]) =>
   rooms.map((room) => room.trim()).filter(Boolean).join("-");
 
 export const formatExamLine = (
-  exam: Pick<ExamCard, "classYear" | "courseName" | "rooms" | "locationText">,
+  exam: Pick<ExamCard, "classYear" | "courseName" | "rooms" | "locationText" | "programs">,
   includeClassPrefix: boolean,
 ) => {
   const roomText = formatLocationText(exam);
-  const prefix = includeClassPrefix ? `${normalizeClassYear(exam.classYear)}: ` : "";
+  const programsText = formatPrograms(exam.programs);
+  const prefix = `${programsText ? `${programsText} | ` : ""}${
+    includeClassPrefix ? `${normalizeClassYear(exam.classYear)}: ` : ""
+  }`;
   return `${prefix}${exam.courseName} (${roomText})`;
 };
 
@@ -194,6 +235,7 @@ export const normalizeDocument = (document: ScheduleDocument): ScheduleDocument 
   const exams = document.exams.map((exam) => ({
     ...exam,
     classYear: normalizeClassYear(exam.classYear),
+    programs: normalizePrograms(exam.programs ?? []),
     courseName: exam.courseName.trim(),
     rooms: exam.rooms.map((room) => room.trim()).filter(Boolean),
     locationText: exam.locationText?.trim() || formatRooms(exam.rooms) || null,
@@ -217,10 +259,15 @@ export const normalizeDocument = (document: ScheduleDocument): ScheduleDocument 
   };
 };
 
-export const createBlankExam = (slotKey: string, classYear: string): ExamCard => ({
+export const createBlankExam = (
+  slotKey: string,
+  classYear: string,
+  programs: string[] = [],
+): ExamCard => ({
   id: createExamId(),
   courseName: "Yeni Sınav",
   classYear: normalizeClassYear(classYear),
+  programs: normalizePrograms(programs),
   slotKey,
   rooms: ["Belirlenecek"],
   locationText: "Belirlenecek",
@@ -274,6 +321,12 @@ export const sortExamsForDisplay = (document: ScheduleDocument, exams: ExamCard[
       return classDelta;
     }
 
+    const programDelta = formatPrograms(left.programs).localeCompare(formatPrograms(right.programs), "tr");
+
+    if (programDelta !== 0) {
+      return programDelta;
+    }
+
     return left.courseName.localeCompare(right.courseName, "tr");
   });
 };
@@ -293,18 +346,48 @@ export const groupExamsBySlot = (document: ScheduleDocument, exams: ExamCard[]) 
   return grouped;
 };
 
-export const groupExamsByClassYear = (exams: ExamCard[]) => {
-  const grouped = new Map<string, ExamCard[]>();
+export const doAudiencesOverlap = (
+  left: Pick<ExamCard, "classYear" | "programs">,
+  right: Pick<ExamCard, "classYear" | "programs">,
+) => {
+  const leftClassYear = normalizeClassYear(left.classYear);
+  const rightClassYear = normalizeClassYear(right.classYear);
+
+  if (!leftClassYear || leftClassYear !== rightClassYear) {
+    return false;
+  }
+
+  const leftPrograms = normalizePrograms(left.programs ?? []);
+  const rightPrograms = normalizePrograms(right.programs ?? []);
+
+  if (leftPrograms.length === 0 || rightPrograms.length === 0) {
+    return true;
+  }
+
+  const rightSet = new Set(rightPrograms.map((program) => program.toLocaleLowerCase("tr")));
+  return leftPrograms.some((program) => rightSet.has(program.toLocaleLowerCase("tr")));
+};
+
+export const groupExamsByAudience = (exams: ExamCard[]) => {
+  const grouped = new Map<string, { label: string; exams: ExamCard[]; sortKey: string }>();
 
   for (const exam of exams) {
-    const key = normalizeClassYear(exam.classYear);
+    const normalizedClassYear = normalizeClassYear(exam.classYear);
+    const programsText = formatPrograms(exam.programs);
+    const key = `${programsText.toLocaleLowerCase("tr")}::${normalizedClassYear.toLocaleLowerCase("tr")}`;
+    const label = formatAudienceLabel(exam);
     const existing = grouped.get(key);
+
     if (existing) {
-      existing.push(exam);
+      existing.exams.push(exam);
     } else {
-      grouped.set(key, [exam]);
+      grouped.set(key, {
+        label,
+        exams: [exam],
+        sortKey: `${normalizedClassYear}::${programsText}`,
+      });
     }
   }
 
-  return grouped;
+  return [...grouped.values()].sort((left, right) => left.sortKey.localeCompare(right.sortKey, "tr"));
 };

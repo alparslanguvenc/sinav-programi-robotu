@@ -40,6 +40,7 @@ describe("conflict detection", () => {
       {
         id: "custom-1",
         classYear: "Hazırlık Grubu",
+        programs: [],
         courseName: "Mülakat",
         slotKey,
         rooms: ["hoca ile görüşülecek"],
@@ -50,6 +51,7 @@ describe("conflict detection", () => {
       {
         id: "custom-2",
         classYear: "Hazırlık Grubu",
+        programs: [],
         courseName: "Sunum",
         slotKey,
         rooms: ["hoca ile görüşülecek"],
@@ -67,6 +69,7 @@ describe("conflict detection", () => {
       {
         id: "unoffered-1",
         classYear: "2.S",
+        programs: [],
         courseName: "Eski Ders I",
         slotKey: UNOFFERED_SLOT_KEY,
         rooms: ["101"],
@@ -77,6 +80,7 @@ describe("conflict detection", () => {
       {
         id: "unoffered-2",
         classYear: "2.S",
+        programs: [],
         courseName: "Eski Ders II",
         slotKey: UNOFFERED_SLOT_KEY,
         rooms: ["101"],
@@ -87,5 +91,70 @@ describe("conflict detection", () => {
     ]);
 
     expect(conflicts).toHaveLength(0);
+  });
+
+  it("does not create class conflicts for different programs in the same class year", () => {
+    const slotKey = createSlotKey("Pzt 23.03.2026", "11:00");
+    const conflicts = detectConflicts([
+      {
+        id: "dept-a",
+        classYear: "1.S",
+        programs: ["Gazetecilik"],
+        courseName: "Haber Yazımı",
+        slotKey,
+        rooms: ["201"],
+        locationText: "201",
+        instructorText: null,
+        parallelGroupId: null,
+        notes: null,
+      },
+      {
+        id: "dept-b",
+        classYear: "1.S",
+        programs: ["Halkla İlişkiler"],
+        courseName: "Kurumsal İletişim",
+        slotKey,
+        rooms: ["202"],
+        locationText: "202",
+        instructorText: null,
+        parallelGroupId: null,
+        notes: null,
+      },
+    ]);
+
+    expect(conflicts.filter((conflict) => conflict.type === "class")).toHaveLength(0);
+  });
+
+  it("creates class conflicts when programs overlap", () => {
+    const slotKey = createSlotKey("Pzt 23.03.2026", "12:00");
+    const conflicts = detectConflicts([
+      {
+        id: "shared-a",
+        classYear: "1.S",
+        programs: ["Gazetecilik", "Halkla İlişkiler"],
+        courseName: "Atatürk İlkeleri",
+        slotKey,
+        rooms: ["301"],
+        locationText: "301",
+        instructorText: null,
+        parallelGroupId: null,
+        notes: null,
+      },
+      {
+        id: "shared-b",
+        classYear: "1.S",
+        programs: ["Gazetecilik"],
+        courseName: "Medya Hukuku",
+        slotKey,
+        rooms: ["302"],
+        locationText: "302",
+        instructorText: null,
+        parallelGroupId: null,
+        notes: null,
+      },
+    ]);
+
+    expect(conflicts.filter((conflict) => conflict.type === "class")).toHaveLength(1);
+    expect(conflicts[0]?.resourceKey).toContain("Gazetecilik");
   });
 });

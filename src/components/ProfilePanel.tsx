@@ -25,6 +25,7 @@ interface ProfileFormState {
   name: string;
   dates: string;
   times: string;
+  programs: string;
   classYears: string;
   rooms: string;
   instructors: string;
@@ -39,6 +40,7 @@ const toFormState = (profile: SchoolProfile | null): ProfileFormState => {
     name: source.name,
     dates: stringifyMultilineList(source.dates),
     times: stringifyMultilineList(source.times),
+    programs: stringifyMultilineList(source.programs),
     classYears: stringifyMultilineList(source.classYears),
     rooms: stringifyMultilineList(source.rooms),
     instructors: stringifyMultilineList(source.instructors),
@@ -74,6 +76,7 @@ export const ProfilePanel = ({
       updatedAt: new Date().toISOString(),
       dates: parseMultilineList(formState.dates),
       times: parseMultilineList(formState.times),
+      programs: parseMultilineList(formState.programs),
       classYears: parseMultilineList(formState.classYears),
       rooms: parseMultilineList(formState.rooms),
       instructors: parseMultilineList(formState.instructors),
@@ -88,7 +91,7 @@ export const ProfilePanel = ({
       </div>
 
       <p className="panel__muted">
-        Tarih, saat, ders, hoca, derslik ve sınıf şablonlarını saklayın. PDF, Word veya Excel
+        Tarih, saat, bölüm, ders, hoca, derslik ve sınıf şablonlarını saklayın. PDF, Word veya Excel
         ders programı yüklenince otomatik sınav taslağı bu profille zenginleştirilir.
       </p>
 
@@ -119,6 +122,16 @@ export const ProfilePanel = ({
             value={formState.times}
             placeholder={"Her satıra bir saat\n09:00"}
             onChange={(event) => handleFieldChange("times", event.target.value)}
+          />
+        </label>
+
+        <label>
+          Bölümler / Programlar
+          <textarea
+            rows={4}
+            value={formState.programs}
+            placeholder={"Her satıra bir bölüm\nGazetecilik"}
+            onChange={(event) => handleFieldChange("programs", event.target.value)}
           />
         </label>
 
@@ -158,7 +171,7 @@ export const ProfilePanel = ({
             rows={7}
             value={formState.courseTemplates}
             placeholder={
-              "Biçim: sınıf | ders | hoca | derslik\n1.S | Arkeoloji | Dr. Ayşe Kaya | 102-103"
+              "Biçim: programlar | sınıf | ders | hoca | derslik\nGazetecilik, Halkla İlişkiler | 1.S | Arkeoloji | Dr. Ayşe Kaya | 102-103"
             }
             onChange={(event) => handleFieldChange("courseTemplates", event.target.value)}
           />
@@ -206,6 +219,7 @@ export const ProfilePanel = ({
 
               const documentFromProfile = buildAutoScheduleDocument(
                 profile.courseTemplates.map((courseTemplate) => ({
+                  programs: courseTemplate.programs,
                   classYear: courseTemplate.classYear,
                   courseName: courseTemplate.courseName,
                   instructorText: courseTemplate.instructorText,

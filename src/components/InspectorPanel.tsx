@@ -1,4 +1,4 @@
-import { formatClassLabel, splitRooms } from "../lib/schedule";
+import { formatAudienceLabel, formatPrograms, parseProgramsInput, splitRooms } from "../lib/schedule";
 import type { ExamCard } from "../types/schedule";
 
 interface InspectorPanelProps {
@@ -19,12 +19,12 @@ export const InspectorPanel = ({
   <section className="panel">
     <div className="panel__header">
       <h2>Kart düzenleyici</h2>
-      {exam ? <span className="panel__badge">{formatClassLabel(exam.classYear)}</span> : null}
+      {exam ? <span className="panel__badge">{formatAudienceLabel(exam)}</span> : null}
     </div>
 
     {!exam ? (
       <p className="panel__muted">
-        Sağdaki kartları düzenlemek için bir sınav seçin. Derslik, sınıf yılı, paralel grup ve not alanları burada değişir.
+        Sağdaki kartları düzenlemek için bir sınav seçin. Bölüm, sınıf, derslik, paralel grup ve not alanları burada değişir.
       </p>
     ) : (
       <form className="inspector" onSubmit={(event) => event.preventDefault()}>
@@ -33,6 +33,19 @@ export const InspectorPanel = ({
           <input
             value={exam.courseName}
             onChange={(event) => onUpdateExam(exam.id, { courseName: event.target.value })}
+          />
+        </label>
+
+        <label>
+          Bölüm / Programlar
+          <input
+            value={formatPrograms(exam.programs)}
+            placeholder="örn. Gazetecilik, Halkla İlişkiler"
+            onChange={(event) =>
+              onUpdateExam(exam.id, {
+                programs: parseProgramsInput(event.target.value),
+              })
+            }
           />
         </label>
 

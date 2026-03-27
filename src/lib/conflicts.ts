@@ -1,21 +1,44 @@
-import { isConflictResource, isFloatingSlot, parseSlotKey } from "./schedule";
+import {
+  doAudiencesOverlap,
+  formatAudienceLabel,
+  formatPrograms,
+  isConflictResource,
+  isFloatingSlot,
+  normalizePrograms,
+  parseSlotKey,
+} from "./schedule";
 import type { Conflict, ExamCard } from "../types/schedule";
 
 const createConflictId = (type: Conflict["type"], slotKey: string, resourceKey: string) =>
   `${type}:${slotKey}:${resourceKey}`;
 
-const hasSharedParallelGroup = (exams: ExamCard[]) => {
-  if (exams.length < 2) {
-    return false;
+const haveSharedParallelGroup = (left: ExamCard, right: ExamCard) =>
+  Boolean(left.parallelGroupId) && left.parallelGroupId === right.parallelGroupId;
+
+const getComponentResourceKey = (exams: ExamCard[]) => {
+  const firstExam = exams[0];
+
+  if (!firstExam) {
+    return "";
   }
 
-  const groups = new Set(exams.map((exam) => exam.parallelGroupId).filter(Boolean));
-  return groups.size === 1 && groups.has(exams[0]?.parallelGroupId ?? null);
+  if (exams.some((exam) => normalizePrograms(exam.programs).length === 0)) {
+    return formatAudienceLabel({
+      classYear: firstExam.classYear,
+      programs: [],
+    });
+  }
+
+  const programs = normalizePrograms(exams.flatMap((exam) => exam.programs));
+  return formatAudienceLabel({
+    classYear: firstExam.classYear,
+    programs,
+  });
 };
 
 export const detectConflicts = (exams: ExamCard[]) => {
   const roomUsage = new Map<string, Set<string>>();
-  const classUsage = new Map<string, ExamCard[]>();
+  const slotClassUsage = new Map<string, ExamCard[]>();
 
   for (const exam of exams) {
     if (isFloatingSlot(exam.slotKey)) {
@@ -40,12 +63,12 @@ export const detectConflicts = (exams: ExamCard[]) => {
     }
 
     const classKey = `${exam.slotKey}::${normalizedClassYear}`;
-    const classExams = classUsage.get(classKey);
+    const classExams = slotClassUsage.get(classKey);
 
     if (classExams) {
       classExams.push(exam);
     } else {
-      classUsage.set(classKey, [exam]);
+      slotClassUsage.set(classKey, [exam]);
     }
   }
 
@@ -67,20 +90,75 @@ export const detectConflicts = (exams: ExamCard[]) => {
     });
   }
 
-  for (const [key, slotExams] of classUsage.entries()) {
-    if (slotExams.length < 2 || hasSharedParallelGroup(slotExams)) {
+  for (const [key, slotExams] of slotClassUsage.entries()) {
+    if (slotExams.length < 2) {
       continue;
     }
 
-    const [slotKey, classYear] = key.split("::");
-    conflicts.push({
-      id: createConflictId("class", slotKey, classYear),
-      type: "class",
-      slotKey,
-      resourceKey: classYear,
-      cardIds: slotExams.map((exam) => exam.id),
-      severity: "warning",
-    });
+    const adjacency = new Map<string, Set<string>>();
+
+    for (const exam of slotExams) {
+      adjacency.set(exam.id, new Set());
+    }
+
+    for (let leftIndex = 0; leftIndex < slotExams.length; leftIndex += 1) {
+      for (let rightIndex = leftIndex + 1; rightIndex < slotExams.length; rightIndex += 1) {
+        const leftExam = slotExams[leftIndex];
+        const rightExam = slotExams[rightIndex];
+
+        if (!doAudiencesOverlap(leftExam, rightExam) || haveSharedParallelGroup(leftExam, rightExam)) {
+          continue;
+        }
+
+        adjacency.get(leftExam.id)?.add(rightExam.id);
+        adjacency.get(rightExam.id)?.add(leftExam.id);
+      }
+    }
+
+    const visited = new Set<string>();
+
+    for (const exam of slotExams) {
+      if (visited.has(exam.id) || (adjacency.get(exam.id)?.size ?? 0) === 0) {
+        continue;
+      }
+
+      const queue = [exam.id];
+      const componentIds: string[] = [];
+
+      while (queue.length > 0) {
+        const currentId = queue.shift()!;
+
+        if (visited.has(currentId)) {
+          continue;
+        }
+
+        visited.add(currentId);
+        componentIds.push(currentId);
+
+        for (const neighborId of adjacency.get(currentId) ?? []) {
+          if (!visited.has(neighborId)) {
+            queue.push(neighborId);
+          }
+        }
+      }
+
+      if (componentIds.length < 2) {
+        continue;
+      }
+
+      const componentExams = slotExams.filter((slotExam) => componentIds.includes(slotExam.id));
+      const [slotKey] = key.split("::");
+      const resourceKey = getComponentResourceKey(componentExams);
+
+      conflicts.push({
+        id: createConflictId("class", slotKey, `${resourceKey}:${formatPrograms(componentExams.flatMap((item) => item.programs))}`),
+        type: "class",
+        slotKey,
+        resourceKey,
+        cardIds: componentIds,
+        severity: "warning",
+      });
+    }
   }
 
   return conflicts.sort((left, right) => {

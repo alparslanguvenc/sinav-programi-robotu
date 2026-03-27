@@ -2,7 +2,7 @@ import { useDraggable } from "@dnd-kit/core";
 import { CSS } from "@dnd-kit/utilities";
 import clsx from "clsx";
 import type { PropsWithChildren } from "react";
-import { formatClassLabel, formatLocationText } from "../lib/schedule";
+import { formatClassLabel, formatLocationText, formatPrograms } from "../lib/schedule";
 import type { ExamCard } from "../types/schedule";
 
 interface ExamCardBaseProps {
@@ -19,24 +19,25 @@ interface ExamCardViewProps extends ExamCardBaseProps {
 const ExamCardBody = ({
   exam,
   children,
-}: PropsWithChildren<ExamCardBaseProps>) => (
-  <>
-    <span className="exam-card__course">{exam.courseName}</span>
-    <span className="exam-card__class">
-      {formatClassLabel(exam.classYear)}
-    </span>
-    <span className="exam-card__location">
-      {formatLocationText(exam)}
-    </span>
-    {exam.instructorText ? (
-      <span className="exam-card__instructor">{exam.instructorText}</span>
-    ) : null}
-    {exam.parallelGroupId ? (
-      <span className="exam-card__group">Paralel: {exam.parallelGroupId}</span>
-    ) : null}
-    {children}
-  </>
-);
+}: PropsWithChildren<ExamCardBaseProps>) => {
+  const programsText = formatPrograms(exam.programs);
+
+  return (
+    <>
+      <span className="exam-card__course">{exam.courseName}</span>
+      {programsText ? <span className="exam-card__programs">{programsText}</span> : null}
+      <span className="exam-card__class">{formatClassLabel(exam.classYear)}</span>
+      <span className="exam-card__location">{formatLocationText(exam)}</span>
+      {exam.instructorText ? (
+        <span className="exam-card__instructor">{exam.instructorText}</span>
+      ) : null}
+      {exam.parallelGroupId ? (
+        <span className="exam-card__group">Paralel: {exam.parallelGroupId}</span>
+      ) : null}
+      {children}
+    </>
+  );
+};
 
 export const ExamCardView = ({
   exam,

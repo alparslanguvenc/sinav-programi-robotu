@@ -35,12 +35,14 @@ describe("source import", () => {
       updatedAt: new Date().toISOString(),
       dates: ["Pzt 23.03.2026", "Sal 24.03.2026"],
       times: ["09:00", "11:00"],
+      programs: ["Gazetecilik", "Radyo TV"],
       classYears: ["1.S", "2.S"],
       rooms: ["102-103", "104"],
       instructors: ["Dr. Ayşe Kaya", "Öğr. Gör. Ali Demir"],
       courseTemplates: [
         {
           id: "course-1",
+          programs: ["Gazetecilik"],
           classYear: "1.S",
           courseName: "Arkeoloji",
           instructorText: "Dr. Ayşe Kaya",
@@ -48,6 +50,7 @@ describe("source import", () => {
         },
         {
           id: "course-2",
+          programs: ["Radyo TV"],
           classYear: "2.S",
           courseName: "Medya Yönetimi",
           instructorText: "Öğr. Gör. Ali Demir",
@@ -70,5 +73,8 @@ describe("source import", () => {
     expect(result.document.exams.find((exam) => exam.courseName === "Arkeoloji")?.locationText).toBe(
       "102-103",
     );
+    expect(result.document.exams.find((exam) => exam.courseName === "Arkeoloji")?.programs).toEqual([
+      "Gazetecilik",
+    ]);
   });
 });

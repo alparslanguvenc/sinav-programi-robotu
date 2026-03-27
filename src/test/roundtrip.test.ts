@@ -12,6 +12,7 @@ const simplifyExams = (exams: ExamCard[]) =>
     .map((exam) => ({
       courseName: exam.courseName,
       classYear: exam.classYear,
+      programs: [...exam.programs].sort(),
       slotKey: exam.slotKey,
       rooms: [...exam.rooms].sort(),
       locationText: exam.locationText ?? null,
@@ -48,6 +49,7 @@ describe("document roundtrips", () => {
     original.exams.push({
       id: "manual-unassigned",
       classYear: "2.S",
+      programs: ["Gazetecilik"],
       courseName: "Deneme Sınavı",
       slotKey: UNASSIGNED_SLOT_KEY,
       rooms: ["105"],
@@ -63,6 +65,7 @@ describe("document roundtrips", () => {
     ).toEqual({
       courseName: "Deneme Sınavı",
       classYear: "2.S",
+      programs: ["Gazetecilik"],
       slotKey: UNASSIGNED_SLOT_KEY,
       rooms: ["105"],
       locationText: "105",
@@ -85,6 +88,7 @@ describe("document roundtrips", () => {
     original.exams.push({
       id: "manual-unoffered",
       classYear: "3.S",
+      programs: ["İletişim Tasarımı"],
       courseName: "Eski Müfredat Dersi",
       slotKey: UNOFFERED_SLOT_KEY,
       rooms: ["101"],
@@ -100,6 +104,7 @@ describe("document roundtrips", () => {
     ).toEqual({
       courseName: "Eski Müfredat Dersi",
       classYear: "3.S",
+      programs: ["İletişim Tasarımı"],
       slotKey: UNOFFERED_SLOT_KEY,
       rooms: ["Öğrenci ile belirlenecek"],
       locationText: "Öğrenci ile belirlenecek",
@@ -113,6 +118,7 @@ describe("document roundtrips", () => {
     original.exams.push({
       id: "manual-custom-text",
       classYear: "Hazırlık Grubu",
+      programs: [],
       courseName: "Portfolyo Değerlendirme",
       slotKey: UNASSIGNED_SLOT_KEY,
       rooms: ["hoca ile görüşülecek"],
@@ -128,6 +134,7 @@ describe("document roundtrips", () => {
     ).toEqual({
       courseName: "Portfolyo Değerlendirme",
       classYear: "Hazırlık Grubu",
+      programs: [],
       slotKey: UNASSIGNED_SLOT_KEY,
       rooms: ["hoca ile görüşülecek"],
       locationText: "hoca ile görüşülecek",
@@ -141,6 +148,7 @@ describe("document roundtrips", () => {
     original.exams.push({
       id: "manual-table-unoffered",
       classYear: "4.S",
+      programs: ["Radyo TV"],
       courseName: "Eski Program Dersi",
       slotKey: UNOFFERED_SLOT_KEY,
       rooms: ["Öğrenci ile belirlenecek"],
@@ -159,11 +167,40 @@ describe("document roundtrips", () => {
 
     expect(workbook.SheetNames).toContain("Tablo Görünümü");
     expect(rows.some((row) => row[0] === "1. SINIF")).toBe(true);
-    expect(rows.some((row) => row[1] === "Yönetim ve Organizasyon")).toBe(true);
+    expect(rows.some((row) => row[2] === "Yönetim ve Organizasyon")).toBe(true);
     expect(rows.some((row) => row[0] === "AÇILMAYAN DERSLER")).toBe(true);
-    expect(rows.some((row) => row[1] === "Eski Program Dersi")).toBe(true);
+    expect(rows.some((row) => row[2] === "Eski Program Dersi")).toBe(true);
     expect(tableSheet.A3?.s?.border?.top?.style).toBe("medium");
     expect(tableSheet.A4?.s?.fill?.fgColor?.rgb).toBe("FCE4D6");
+  });
+
+  it("preserves program assignments through Excel export/import", () => {
+    const original = loadFixtureDocument();
+    original.exams.push({
+      id: "manual-programs",
+      classYear: "1.S",
+      programs: ["Gazetecilik", "Halkla İlişkiler"],
+      courseName: "Ortak Seçmeli",
+      slotKey: UNASSIGNED_SLOT_KEY,
+      rooms: ["401"],
+      locationText: "401",
+      instructorText: "Dr. Deniz Aras",
+      parallelGroupId: null,
+      notes: "program ortak",
+    });
+
+    const restored = parseWorkbookArrayBuffer(exportWorkbookArrayBuffer(original));
+
+    expect(simplifyExams(restored.exams).find((exam) => exam.courseName === "Ortak Seçmeli")).toEqual({
+      courseName: "Ortak Seçmeli",
+      classYear: "1.S",
+      programs: ["Gazetecilik", "Halkla İlişkiler"],
+      slotKey: UNASSIGNED_SLOT_KEY,
+      rooms: ["401"],
+      locationText: "401",
+      parallelGroupId: null,
+      notes: "program ortak",
+    });
   });
 
   it("styles the grid worksheets with highlighted headers and card-like exam cells", () => {

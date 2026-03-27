@@ -14,6 +14,7 @@ export interface ExamCard {
   id: string;
   courseName: string;
   classYear: string;
+  programs: string[];
   slotKey: string;
   rooms: string[];
   locationText?: string | null;
@@ -47,6 +48,7 @@ export interface ScheduleDocument {
 
 export interface ProfileCourseTemplate {
   id: string;
+  programs: string[];
   classYear: string;
   courseName: string;
   instructorText: string | null;
@@ -59,6 +61,7 @@ export interface SchoolProfile {
   updatedAt: string;
   dates: string[];
   times: string[];
+  programs: string[];
   classYears: string[];
   rooms: string[];
   instructors: string[];

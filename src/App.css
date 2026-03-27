@@ -1,9 +1,9 @@
 .app-shell {
   min-height: 100vh;
-  padding: 18px;
+  padding: 12px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 10px;
   font-size: calc(15px * var(--ui-scale, 1));
 }
 
@@ -11,10 +11,10 @@
   display: flex;
   flex-wrap: wrap;
   justify-content: space-between;
-  gap: 12px;
+  gap: 8px;
   align-items: center;
-  padding: 12px 16px;
-  border-radius: 20px;
+  padding: 8px 12px;
+  border-radius: 16px;
   border: 1px solid rgba(13, 69, 73, 0.16);
   background:
     linear-gradient(135deg, rgba(255, 252, 245, 0.95), rgba(247, 242, 234, 0.96)),
@@ -25,8 +25,9 @@
 .attribution-banner__text {
   margin: 0;
   font-weight: 700;
-  line-height: 1.45;
+  line-height: 1.35;
   max-width: 880px;
+  font-size: 0.9em;
 }
 
 .attribution-banner__links {
@@ -39,8 +40,8 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  min-height: 40px;
-  padding: 0 12px;
+  min-height: 34px;
+  padding: 0 10px;
   border-radius: 999px;
   border: 1px solid rgba(13, 69, 73, 0.14);
   color: var(--ink);
@@ -50,8 +51,8 @@
 }
 
 .social-link__badge {
-  width: 26px;
-  height: 26px;
+  width: 22px;
+  height: 22px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -67,10 +68,10 @@
   top: 0;
   z-index: 20;
   display: grid;
-  gap: 14px;
-  padding: 16px 18px;
+  gap: 10px;
+  padding: 12px 14px;
   border: 1px solid rgba(13, 69, 73, 0.16);
-  border-radius: 24px;
+  border-radius: 18px;
   background:
     linear-gradient(135deg, rgba(255, 247, 233, 0.96), rgba(255, 255, 255, 0.98)),
     radial-gradient(circle at top right, rgba(227, 111, 79, 0.16), transparent 40%);
@@ -88,11 +89,15 @@
 }
 
 .toolbar__eyebrow {
-  margin: 0 0 6px;
+  margin: 0 0 2px;
   color: var(--muted);
-  font-size: 0.72rem;
+  font-size: 0.66rem;
   letter-spacing: 0.18em;
   text-transform: uppercase;
+}
+
+.toolbar__brand h1 {
+  font-size: 1.7em;
 }
 
 .toolbar__summary,
@@ -102,24 +107,25 @@
 .unassigned-group__header span {
   margin: 0;
   color: var(--muted);
-  line-height: 1.45;
+  line-height: 1.35;
+  font-size: 0.92em;
 }
 
 .toolbar__controls {
   display: grid;
   grid-template-columns:
-    minmax(280px, 1.25fr)
-    minmax(150px, 220px)
-    minmax(150px, 220px)
-    minmax(120px, 180px)
+    minmax(220px, 1.15fr)
+    minmax(140px, 200px)
+    minmax(140px, 200px)
+    minmax(110px, 160px)
     minmax(0, 1fr);
-  gap: 12px;
+  gap: 10px;
   align-items: end;
 }
 
 .toolbar__view-block {
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .toolbar__select {
@@ -131,17 +137,17 @@
 
 .toolbar__view-list {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
+  gap: 6px;
 }
 
 .toolbar__view-chip {
   display: grid;
   gap: 4px;
-  min-height: 72px;
+  min-height: 54px;
   border: 1px solid rgba(13, 69, 73, 0.14);
-  border-radius: 16px;
-  padding: 10px 12px;
+  border-radius: 13px;
+  padding: 7px 9px;
   background: rgba(255, 255, 255, 0.82);
   color: var(--ink);
   text-align: left;
@@ -165,24 +171,25 @@
 
 .toolbar__view-chip-label {
   font-weight: 700;
+  font-size: 0.92em;
 }
 
 .toolbar__view-chip-meta {
   color: var(--muted);
-  font-size: 0.82em;
-  line-height: 1.35;
+  font-size: 0.74em;
+  line-height: 1.25;
 }
 
 .toolbar__select select,
 .inspector input,
 .inspector textarea {
-  min-height: 40px;
+  min-height: 36px;
   border-radius: 12px;
   border: 1px solid rgba(13, 69, 73, 0.18);
   background: rgba(255, 255, 255, 0.88);
   color: var(--ink);
   font: inherit;
-  padding: 8px 10px;
+  padding: 7px 10px;
 }
 
 .toolbar__select select,
@@ -198,10 +205,10 @@
 }
 
 .button {
-  min-height: 40px;
+  min-height: 36px;
   border: none;
   border-radius: 999px;
-  padding: 0 14px;
+  padding: 0 12px;
   background: var(--ink);
   color: #fff;
   font: inherit;
@@ -244,7 +251,7 @@
 .toolbar__busy,
 .status-banner {
   border-radius: 14px;
-  padding: 10px 14px;
+  padding: 8px 12px;
   font-weight: 600;
 }
 
@@ -266,7 +273,7 @@
 .workspace {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(340px, var(--sidebar-width));
-  gap: 14px;
+  gap: 10px;
   align-items: start;
 }
 
@@ -286,14 +293,14 @@
 
 .workspace__board {
   min-width: 0;
-  padding: 16px;
+  padding: 12px;
 }
 
 .workspace__board-header {
   display: flex;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 14px;
+  margin-bottom: 10px;
 }
 
 .workspace__board-scroller {
@@ -302,17 +309,17 @@
 
 .board-stack {
   display: grid;
-  gap: 14px;
+  gap: 10px;
   min-width: fit-content;
 }
 
 .workspace__sidebar {
   display: grid;
-  gap: 14px;
+  gap: 10px;
 }
 
 .panel {
-  padding: 16px;
+  padding: 12px;
 }
 
 .panel__header {
@@ -320,7 +327,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  margin-bottom: 12px;
+  margin-bottom: 10px;
 }
 
 .panel__badge {
@@ -357,7 +364,7 @@
 .board-secondary__label {
   position: sticky;
   z-index: 1;
-  padding: 12px;
+  padding: 10px;
   background: linear-gradient(180deg, rgba(241, 233, 218, 0.94), rgba(249, 246, 239, 0.96));
   font-weight: 700;
 }
@@ -383,7 +390,7 @@
 .board__cell {
   position: relative;
   min-height: var(--board-cell-min-height);
-  padding: 12px 10px 10px;
+  padding: 10px 8px 8px;
   background: rgba(255, 255, 255, 0.92);
   transition: background 140ms ease;
 }
@@ -391,7 +398,7 @@
 .board-secondary__cell {
   position: relative;
   min-height: calc(var(--board-cell-min-height) * 0.92);
-  padding: 12px 10px 10px;
+  padding: 10px 8px 8px;
   background: rgba(255, 255, 255, 0.92);
   transition: background 140ms ease;
 }
@@ -430,12 +437,12 @@
 }
 
 .board__card-list {
-  margin-top: 14px;
+  margin-top: 10px;
 }
 
 .exam-card {
   display: grid;
-  gap: 6px;
+  gap: 4px;
   width: 100%;
   text-align: left;
   border: 1px solid rgba(13, 69, 73, 0.12);
@@ -472,15 +479,21 @@
 .exam-card__course {
   font-weight: 700;
   line-height: 1.3;
-  font-size: 0.95em;
+  font-size: 0.9em;
 }
 
+.exam-card__programs,
 .exam-card__class,
 .exam-card__location,
 .exam-card__instructor,
 .exam-card__group {
   color: var(--muted);
-  font-size: 0.82em;
+  font-size: 0.78em;
+}
+
+.exam-card__programs {
+  font-weight: 600;
+  color: #38585b;
 }
 
 .exam-card__class {

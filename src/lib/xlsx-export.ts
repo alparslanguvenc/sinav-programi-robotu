@@ -6,6 +6,7 @@ import {
   createSlotKey,
   formatExamLine,
   formatLocationText,
+  formatPrograms,
   isUnofferedSlot,
   isUnassignedSlot,
   normalizeClassYear,
@@ -18,7 +19,15 @@ import type { ExamCard, ScheduleDocument } from "../types/schedule";
 const GENERAL_SHEET_NAME = "Genel";
 const NOTES_SHEET_NAME = "Notlar";
 const TABLE_SHEET_NAME = "Tablo Görünümü";
-const TABLE_HEADERS = ["Sınıf", "Ders", "Tarih", "Saat", "Derslik", "Hoca / Gözetmen"] as const;
+const TABLE_HEADERS = [
+  "Bölüm / Program",
+  "Sınıf",
+  "Ders",
+  "Tarih",
+  "Saat",
+  "Derslik",
+  "Hoca / Gözetmen",
+] as const;
 const TABLE_COLUMN_COUNT = TABLE_HEADERS.length;
 
 type TableRowKind = "title" | "subtitle" | "section" | "header" | "data" | "spacer";
@@ -34,7 +43,7 @@ const createBorder = (style: XLSX.BorderType = "thin"): XLSX.CellStyle["border"]
 });
 
 const createTableCellStyle = (rowKind: TableRowKind, columnIndex: number): XLSX.CellStyle => {
-  const centered = columnIndex === 0 || columnIndex === 2 || columnIndex === 3 || columnIndex === 5;
+  const centered = columnIndex === 1 || columnIndex === 3 || columnIndex === 4 || columnIndex === 6;
   const base: XLSX.CellStyle = {
     border: createBorder(rowKind === "title" || rowKind === "subtitle" || rowKind === "section" ? "medium" : "thin"),
     font: {
@@ -457,7 +466,15 @@ const createWorksheet = (
 const createUnassignedWorksheet = (document: ScheduleDocument) => {
   const rows: Array<Array<string | null>> = [
     ["Yerleştirilmeyen Kartlar"],
-    ["Sınıf", "Ders", "Derslik / Açıklama", "Hoca / Gözetmen", "Paralel Grup", "Not"],
+    [
+      "Bölüm / Programlar",
+      "Sınıf",
+      "Ders",
+      "Derslik / Açıklama",
+      "Hoca / Gözetmen",
+      "Paralel Grup",
+      "Not",
+    ],
   ];
 
   for (const exam of sortExamsForDisplay(
@@ -465,6 +482,7 @@ const createUnassignedWorksheet = (document: ScheduleDocument) => {
     document.exams.filter((item) => isUnassignedSlot(item.slotKey)),
   )) {
     rows.push([
+        formatPrograms(exam.programs),
         exam.classYear,
         exam.courseName,
         exam.locationText ?? exam.rooms.join("-"),
@@ -477,12 +495,12 @@ const createUnassignedWorksheet = (document: ScheduleDocument) => {
   return XLSX.utils.aoa_to_sheet(rows);
 };
 
-const createSectionRow = (label: string) => [label, "", "", "", "", ""];
+const createSectionRow = (label: string) => [label, "", "", "", "", "", ""];
 
 const createTableWorksheet = (document: ScheduleDocument) => {
   const rows: string[][] = [
-    [getGeneralTitle(document), "", "", "", "", ""],
-    ["TABLO GÖRÜNÜMÜ", "", "", "", "", ""],
+    [getGeneralTitle(document), "", "", "", "", "", ""],
+    ["TABLO GÖRÜNÜMÜ", "", "", "", "", "", ""],
   ];
   const rowKinds: TableRowKind[] = ["title", "subtitle"];
   const merges = [
@@ -515,6 +533,7 @@ const createTableWorksheet = (document: ScheduleDocument) => {
     for (const exam of scheduledExams) {
       const slot = parseSlotKey(exam.slotKey);
       rows.push([
+        formatPrograms(exam.programs),
         classYearToLabel(exam.classYear),
         exam.courseName,
         slot.date,
@@ -547,6 +566,7 @@ const createTableWorksheet = (document: ScheduleDocument) => {
 
       for (const exam of unofferedExams) {
         rows.push([
+          formatPrograms(exam.programs),
           classYearToLabel(exam.classYear),
           exam.courseName,
           "",
@@ -558,13 +578,14 @@ const createTableWorksheet = (document: ScheduleDocument) => {
       }
     }
 
-    rows.push(["", "", "", "", "", ""]);
+    rows.push(["", "", "", "", "", "", ""]);
     rowKinds.push("spacer");
   }
 
   const sheet = XLSX.utils.aoa_to_sheet(rows);
   sheet["!merges"] = merges;
   sheet["!cols"] = [
+    { wch: 24 },
     { wch: 14 },
     { wch: 34 },
     { wch: 18 },

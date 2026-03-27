@@ -26,6 +26,9 @@ describe("app shell", () => {
 
     expect(screen.getByDisplayValue("dil-1")).toBeInTheDocument();
 
+    const programsInput = screen.getByLabelText("Bölüm / Programlar");
+    fireEvent.change(programsInput, { target: { value: "Gazetecilik, Halkla İlişkiler" } });
+
     const classInput = screen.getByLabelText("Sınıf");
     fireEvent.change(classInput, { target: { value: "Hazırlık Grubu" } });
     expect(screen.getByDisplayValue("Hazırlık Grubu")).toBeInTheDocument();
@@ -35,6 +38,7 @@ describe("app shell", () => {
 
     expect(screen.getByDisplayValue("Hoca ile gorusulecek")).toBeInTheDocument();
     expect(archaeologyCard.textContent).toContain("Hazırlık Grubu");
+    expect(archaeologyCard.textContent).toContain("Gazetecilik, Halkla İlişkiler");
     expect(archaeologyCard.textContent).toContain("Hoca ile gorusulecek");
 
     const updatedExam = useScheduleStore
@@ -42,6 +46,7 @@ describe("app shell", () => {
       .document?.exams.find((exam) => exam.courseName === "Arkeoloji");
 
     expect(updatedExam?.classYear).toBe("Hazırlık Grubu");
+    expect(updatedExam?.programs).toEqual(["Gazetecilik", "Halkla İlişkiler"]);
     expect(updatedExam?.locationText).toBe("Hoca ile gorusulecek");
   });
 
@@ -97,6 +102,7 @@ describe("app shell", () => {
     document.exams.push({
       id: "unoffered-row-card",
       classYear: "3.S",
+      programs: ["Radyo TV"],
       courseName: "Eski Dönem Seçmeli",
       slotKey: UNOFFERED_SLOT_KEY,
       rooms: ["Öğrenci ile belirlenecek"],
@@ -212,12 +218,16 @@ describe("app shell", () => {
     fireEvent.change(currentRender.getByLabelText("Saatler"), {
       target: { value: "09:00\n11:00" },
     });
+    fireEvent.change(currentRender.getByLabelText("Bölümler / Programlar"), {
+      target: { value: "Gazetecilik\nRadyo TV" },
+    });
     fireEvent.change(currentRender.getByLabelText("Sınıflar"), {
       target: { value: "1.S\n2.S" },
     });
     fireEvent.change(currentRender.getByLabelText("Ders şablonları"), {
       target: {
-        value: "1.S | Arkeoloji | Dr. Ayşe Kaya | 102-103\n2.S | Medya Yönetimi | Öğr. Gör. Ali Demir | 104",
+        value:
+          "Gazetecilik | 1.S | Arkeoloji | Dr. Ayşe Kaya | 102-103\nRadyo TV | 2.S | Medya Yönetimi | Öğr. Gör. Ali Demir | 104",
       },
     });
 
@@ -225,6 +235,7 @@ describe("app shell", () => {
 
     expect(useScheduleStore.getState().profiles).toHaveLength(1);
     expect(useScheduleStore.getState().profiles[0]?.name).toBe("İletişim Fakültesi");
+    expect(useScheduleStore.getState().profiles[0]?.programs).toEqual(["Gazetecilik", "Radyo TV"]);
 
     const profileSelect = container.querySelector('select[aria-label="Okul profili"]') as HTMLSelectElement;
     expect(Array.from(profileSelect.options).some((option) => option.text.includes("İletişim Fakültesi"))).toBe(

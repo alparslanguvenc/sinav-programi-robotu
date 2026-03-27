@@ -1,4 +1,12 @@
-import { formatRooms, normalizeClassYear, normalizeTimeInput, sortClassYears } from "./schedule";
+import {
+  formatPrograms,
+  formatRooms,
+  normalizeClassYear,
+  normalizePrograms,
+  normalizeTimeInput,
+  parseProgramsInput,
+  sortClassYears,
+} from "./schedule";
 import type {
   ProfileCourseTemplate,
   ScheduleDocument,
@@ -27,6 +35,7 @@ export const createBlankProfile = (name = "Yeni Okul Profili"): SchoolProfile =>
   updatedAt: new Date().toISOString(),
   dates: [],
   times: [],
+  programs: [],
   classYears: [],
   rooms: [],
   instructors: [],
@@ -44,6 +53,7 @@ const normalizeCourseTemplate = (
 
   return {
     id: courseTemplate.id || crypto.randomUUID(),
+    programs: normalizePrograms(courseTemplate.programs ?? []),
     classYear: normalizeClassYear(courseTemplate.classYear),
     courseName,
     instructorText: courseTemplate.instructorText?.trim() || null,
@@ -58,6 +68,7 @@ export const normalizeSchoolProfile = (profile: SchoolProfile): SchoolProfile =>
     .filter(Boolean)
     .sort((left, right) => left.localeCompare(right, "tr"));
   const classYears = sortClassYears(profile.classYears);
+  const programs = sanitizeList(profile.programs ?? []);
   const rooms = sanitizeList(profile.rooms);
   const instructors = sanitizeList(profile.instructors);
   const courseTemplates = profile.courseTemplates
@@ -73,6 +84,12 @@ export const normalizeSchoolProfile = (profile: SchoolProfile): SchoolProfile =>
         return classDelta;
       }
 
+      const programDelta = formatPrograms(left.programs).localeCompare(formatPrograms(right.programs), "tr");
+
+      if (programDelta !== 0) {
+        return programDelta;
+      }
+
       return left.courseName.localeCompare(right.courseName, "tr");
     });
 
@@ -83,6 +100,7 @@ export const normalizeSchoolProfile = (profile: SchoolProfile): SchoolProfile =>
     updatedAt: profile.updatedAt || new Date().toISOString(),
     dates,
     times,
+    programs,
     classYears,
     rooms,
     instructors,
@@ -96,12 +114,15 @@ export const parseCourseTemplatesInput = (raw: string) =>
     .map((line) => line.trim())
     .filter(Boolean)
     .map((line) => {
-      const [classYear = "", courseName = "", instructorText = "", locationText = ""] = line
-        .split("|")
-        .map((part) => part.trim());
+      const parts = line.split("|").map((part) => part.trim());
+      const [programsPart = "", classYear = "", courseName = "", instructorText = "", locationText = ""] =
+        parts.length >= 5
+          ? parts
+          : ["", parts[0] ?? "", parts[1] ?? "", parts[2] ?? "", parts[3] ?? ""];
 
       return normalizeCourseTemplate({
         id: crypto.randomUUID(),
+        programs: parseProgramsInput(programsPart),
         classYear,
         courseName,
         instructorText: instructorText || null,
@@ -114,6 +135,7 @@ export const stringifyCourseTemplates = (courseTemplates: ProfileCourseTemplate[
   courseTemplates
     .map((courseTemplate) =>
       [
+        formatPrograms(courseTemplate.programs),
         courseTemplate.classYear,
         courseTemplate.courseName,
         courseTemplate.instructorText ?? "",
@@ -126,6 +148,7 @@ export const buildProfileFromDocument = (
   document: ScheduleDocument,
   name = document.sourceMeta.generalTitle ?? "Mevcut Çizelge Profili",
 ): SchoolProfile => {
+  const programs = sanitizeList(document.exams.flatMap((exam) => exam.programs));
   const classYears = sortClassYears(document.exams.map((exam) => exam.classYear));
   const rooms = sanitizeList(
     document.exams.flatMap((exam) => {
@@ -138,6 +161,7 @@ export const buildProfileFromDocument = (
   );
   const courseTemplates = document.exams.map((exam) => ({
     id: crypto.randomUUID(),
+    programs: normalizePrograms(exam.programs),
     classYear: normalizeClassYear(exam.classYear),
     courseName: exam.courseName,
     instructorText: exam.instructorText?.trim() || null,
@@ -150,6 +174,7 @@ export const buildProfileFromDocument = (
     updatedAt: new Date().toISOString(),
     dates: document.template.dates,
     times: document.template.times,
+    programs,
     classYears,
     rooms,
     instructors,

@@ -20,7 +20,7 @@ export const AttributionBanner = () => (
   <section className="attribution-banner">
     <p className="attribution-banner__text">
       bu program tüm sınav koordinatörlerinin işlerini kolaylaştırmak için ALPARSLAN GÜVENÇ
-      tarafından kar amacı gütmeksizin geliştirilmiştir
+      tarafından geliştirilmiştir
     </p>
 
     <div className="attribution-banner__links">

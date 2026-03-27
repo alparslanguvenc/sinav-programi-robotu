@@ -1,11 +1,6 @@
 import { useDroppable } from "@dnd-kit/core";
 import clsx from "clsx";
-import {
-  UNASSIGNED_SLOT_KEY,
-  formatClassLabel,
-  groupExamsByClassYear,
-  sortClassYears,
-} from "../lib/schedule";
+import { UNASSIGNED_SLOT_KEY, groupExamsByAudience } from "../lib/schedule";
 import type { ExamCard } from "../types/schedule";
 import { ExamCardView } from "./ExamCardView";
 
@@ -29,8 +24,7 @@ export const UnassignedPanel = ({
       slotKey: UNASSIGNED_SLOT_KEY,
     },
   });
-  const groups = groupExamsByClassYear(exams);
-  const classYears = sortClassYears([...groups.keys()]);
+  const groups = groupExamsByAudience(exams);
 
   return (
     <section className="panel">
@@ -45,20 +39,20 @@ export const UnassignedPanel = ({
           "unassigned-dropzone--over": isOver,
         })}
       >
-        {classYears.length === 0 ? (
+        {groups.length === 0 ? (
           <p className="panel__muted">
             Boşta kart yok. `Yeni kart` ile havuza ekleyip daha sonra çizelgeye sürükleyebilirsiniz.
           </p>
         ) : (
           <div className="unassigned-groups">
-            {classYears.map((classYear) => (
-              <section key={classYear} className="unassigned-group">
+            {groups.map((group) => (
+              <section key={group.sortKey} className="unassigned-group">
                 <div className="unassigned-group__header">
-                  <strong>{formatClassLabel(classYear)}</strong>
-                  <span>{groups.get(classYear)?.length ?? 0} kart</span>
+                  <strong>{group.label}</strong>
+                  <span>{group.exams.length} kart</span>
                 </div>
                 <div className="unassigned-group__cards">
-                  {(groups.get(classYear) ?? []).map((exam) => (
+                  {group.exams.map((exam) => (
                     <ExamCardView
                       key={exam.id}
                       exam={exam}

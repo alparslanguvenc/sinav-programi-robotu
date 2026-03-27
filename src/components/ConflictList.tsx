@@ -13,7 +13,7 @@ const getConflictTitle = (conflict: Conflict) => {
   const target =
     conflict.type === "room"
       ? `Derslik ${conflict.resourceKey}`
-      : `${conflict.resourceKey} sınıfı`;
+      : `${conflict.resourceKey} grubu`;
   return `${date} · ${time} · ${target}`;
 };
 
@@ -25,7 +25,7 @@ const getConflictDescription = (conflict: Conflict, examLookup: Map<string, Exam
 
   return conflict.type === "room"
     ? `Aynı derslik birden fazla kart tarafından kullanılıyor: ${names}`
-    : `Aynı sınıfta paralel olarak tanımlanmamış kartlar var: ${names}`;
+    : `Ortak öğrenci kitlesi çakışıyor ve paralel istisnası yok: ${names}`;
 };
 
 export const ConflictList = ({

@@ -15,6 +15,7 @@ import {
   getDefaultSlotKey,
   insertTimeSorted,
   normalizeClassYear,
+  normalizePrograms,
   normalizeDocument,
 } from "../lib/schedule";
 import type {
@@ -474,6 +475,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
                 ...exam,
                 ...patch,
                 classYear: normalizeClassYear(patch.classYear ?? exam.classYear),
+                programs: normalizePrograms(patch.programs ?? exam.programs),
                 rooms: patch.rooms ?? exam.rooms,
               }
             : exam,

@@ -4,8 +4,12 @@ import {
   createBlankExam,
   createSlotKey,
   createViews,
+  doAudiencesOverlap,
+  formatPrograms,
   normalizeClassYear,
+  normalizePrograms,
   normalizeDocument,
+  parseProgramsInput,
   splitRooms,
 } from "./schedule";
 import { normalizeSchoolProfile } from "./profiles";
@@ -23,6 +27,7 @@ type GenericSheet = {
 };
 
 type CourseSeed = {
+  programs: string[];
   classYear: string;
   courseName: string;
   instructorText: string | null;
@@ -49,6 +54,7 @@ const INSTRUCTOR_PATTERN =
 const ROOM_PATTERN =
   /^(?:[A-ZÇĞİÖŞÜ]-?)?\d{2,4}(?:[-/]\d{2,4})*$|^(?:amfi|derslik|salon|oda)\b/ui;
 const HEADER_PATTERNS = {
+  programs: /(böl(ü|u)m|program|department|dept|birim|major|branch)/i,
   classYear: /(sınıf|sinif|class|grade|year)/i,
   courseName: /(ders|course|module|modul|lesson)/i,
   instructorText: /(hoca|öğret|ogret|teacher|lecturer|instructor|gözetmen|gozetmen)/i,
@@ -68,7 +74,9 @@ const uniqueCourseSeeds = (courseSeeds: CourseSeed[]) => {
   const seen = new Set<string>();
 
   return courseSeeds.filter((courseSeed) => {
-    const key = `${normalizeClassYear(courseSeed.classYear)}::${normalizeSearchText(courseSeed.courseName)}`;
+    const key = `${formatPrograms(courseSeed.programs).toLocaleLowerCase("tr")}::${normalizeClassYear(
+      courseSeed.classYear,
+    )}::${normalizeSearchText(courseSeed.courseName)}`;
 
     if (seen.has(key)) {
       return false;
@@ -98,6 +106,7 @@ const inferCourseSeedFromCells = (cells: string[], classHint?: string | null): C
   }
 
   let classYear = classHint ? normalizeClassYear(classHint) : "";
+  let programs: string[] = [];
   let instructorText: string | null = null;
   let locationText: string | null = null;
   const courseCandidates: string[] = [];
@@ -108,6 +117,15 @@ const inferCourseSeedFromCells = (cells: string[], classHint?: string | null): C
     if (!classYear && inferredClassYear && inferredClassYear !== cell) {
       classYear = inferredClassYear;
       continue;
+    }
+
+    if (programs.length === 0 && !INSTRUCTOR_PATTERN.test(cell) && !ROOM_PATTERN.test(cell)) {
+      const programCandidates = parseProgramsInput(cell);
+
+      if (programCandidates.length > 1) {
+        programs = programCandidates;
+        continue;
+      }
     }
 
     if (!instructorText && INSTRUCTOR_PATTERN.test(cell)) {
@@ -138,6 +156,7 @@ const inferCourseSeedFromCells = (cells: string[], classHint?: string | null): C
   }
 
   return {
+    programs: normalizePrograms(programs),
     classYear,
     courseName,
     instructorText,
@@ -183,6 +202,10 @@ const extractSeedsFromRows = (rows: string[][], classHint?: string | null) => {
       }
 
       courseSeeds.push({
+        programs:
+          typeof headerMap.programs === "number"
+            ? parseProgramsInput(cleaned[headerMap.programs] ?? "")
+            : [],
         classYear:
           (typeof headerMap.classYear === "number" ? inferClassYear(cleaned[headerMap.classYear] ?? "") : "") ||
           normalizeClassYear(classHint ?? ""),
@@ -264,8 +287,13 @@ const mergeWithProfile = (courseSeeds: CourseSeed[], profile: SchoolProfile | nu
 
   for (const courseTemplate of profile.courseTemplates) {
     const normalizedClassYear = normalizeClassYear(courseTemplate.classYear);
+    const normalizedPrograms = formatPrograms(courseTemplate.programs).toLocaleLowerCase("tr");
     const normalizedCourseName = normalizeSearchText(courseTemplate.courseName);
     byExactKey.set(`${normalizedClassYear}::${normalizedCourseName}`, courseTemplate);
+    byExactKey.set(
+      `${normalizedPrograms}::${normalizedClassYear}::${normalizedCourseName}`,
+      courseTemplate,
+    );
 
     if (!byCourseKey.has(normalizedCourseName)) {
       byCourseKey.set(normalizedCourseName, courseTemplate);
@@ -275,12 +303,15 @@ const mergeWithProfile = (courseSeeds: CourseSeed[], profile: SchoolProfile | nu
   return uniqueCourseSeeds(
     courseSeeds.map((courseSeed) => {
       const normalizedClassYear = normalizeClassYear(courseSeed.classYear);
+      const normalizedPrograms = formatPrograms(courseSeed.programs).toLocaleLowerCase("tr");
       const normalizedCourseName = normalizeSearchText(courseSeed.courseName);
       const matchedTemplate =
+        byExactKey.get(`${normalizedPrograms}::${normalizedClassYear}::${normalizedCourseName}`) ??
         byExactKey.get(`${normalizedClassYear}::${normalizedCourseName}`) ??
         byCourseKey.get(normalizedCourseName);
 
       return {
+        programs: matchedTemplate?.programs ?? courseSeed.programs,
         classYear: matchedTemplate?.classYear ?? courseSeed.classYear,
         courseName: matchedTemplate?.courseName ?? courseSeed.courseName,
         instructorText: matchedTemplate?.instructorText ?? courseSeed.instructorText,
@@ -324,6 +355,7 @@ const resolveSeedsFromSource = (options: {
   const fallbackTemplates = matchedTemplates.length > 0 ? matchedTemplates : profile.courseTemplates;
 
   return fallbackTemplates.map((courseTemplate) => ({
+    programs: courseTemplate.programs,
     classYear: courseTemplate.classYear,
     courseName: courseTemplate.courseName,
     instructorText: courseTemplate.instructorText,
@@ -361,13 +393,22 @@ const selectSlotForExam = (
   courseSeed: CourseSeed,
 ) => {
   const normalizedClassYear = normalizeClassYear(courseSeed.classYear);
+  const normalizedPrograms = normalizePrograms(courseSeed.programs);
   const requestedRooms = splitRooms(courseSeed.locationText ?? "");
 
   const candidates = slots.filter((slotKey) => {
     const slotExams = examsBySlot.get(slotKey) ?? [];
     const classConflict =
       normalizedClassYear &&
-      slotExams.some((exam) => normalizeClassYear(exam.classYear) === normalizedClassYear);
+      slotExams.some((exam) =>
+        doAudiencesOverlap(
+          {
+            classYear: normalizedClassYear,
+            programs: normalizedPrograms,
+          },
+          exam,
+        ),
+      );
 
     if (classConflict) {
       return false;
@@ -415,12 +456,19 @@ export const buildAutoScheduleDocument = (
         return classDelta;
       }
 
+      const programDelta = formatPrograms(left.programs).localeCompare(formatPrograms(right.programs), "tr");
+
+      if (programDelta !== 0) {
+        return programDelta;
+      }
+
       return left.courseName.localeCompare(right.courseName, "tr");
     })
     .map((courseSeed) => {
       const slotKey = selectSlotForExam(slots, examsBySlot, courseSeed);
       const exam = {
-        ...createBlankExam(slotKey ?? UNASSIGNED_SLOT_KEY, courseSeed.classYear),
+        ...createBlankExam(slotKey ?? UNASSIGNED_SLOT_KEY, courseSeed.classYear, courseSeed.programs),
+        programs: normalizePrograms(courseSeed.programs),
         courseName: courseSeed.courseName,
         classYear: courseSeed.classYear,
         slotKey: slotKey ?? UNASSIGNED_SLOT_KEY,

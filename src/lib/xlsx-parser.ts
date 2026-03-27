@@ -10,6 +10,7 @@ import {
   labelToClassYear,
   normalizeClassYear,
   normalizeDocument,
+  parseProgramsInput,
   splitRooms,
 } from "./schedule";
 import type { ExamCard, ScheduleDocument, SourceWorkbookMeta } from "../types/schedule";
@@ -25,8 +26,6 @@ type GridTemplate = {
 const GENERAL_SHEET_NAME = "Genel";
 const NOTES_SHEET_NAME = "Notlar";
 const TIME_HEADER = "Saat";
-const examLinePattern =
-  /^(?:(?<classYear>[^:()]+):\s*)?(?<courseName>.+?)\s*\((?<rooms>[^)]+)\)\s*$/u;
 
 const cellToString = (value: CellValue) => {
   if (value === null || value === undefined) {
@@ -54,6 +53,51 @@ const findUnofferedRowIndex = (rows: CellValue[][]) =>
       }) === 0,
   );
 
+const findColumnIndex = (headerRow: string[], value: string) =>
+  headerRow.findIndex((header) => header.localeCompare(value, "tr", { sensitivity: "base" }) === 0);
+
+const parseExamLine = (line: string, classYearHint: string | null) => {
+  const match = /^(?<body>.+?)\s*\((?<rooms>[^()]*)\)\s*$/u.exec(line);
+
+  if (!match?.groups) {
+    throw new Error(`Sınav satırı çözümlenemedi: "${line}"`);
+  }
+
+  let body = match.groups.body.trim();
+  let programs: string[] = [];
+
+  if (body.includes(" | ")) {
+    const [programPart, ...rest] = body.split(" | ");
+    programs = parseProgramsInput(programPart);
+    body = rest.join(" | ").trim();
+  }
+
+  let classYear = normalizeClassYear(classYearHint ?? "");
+  let courseName = body;
+
+  if (!classYearHint) {
+    const separatorIndex = body.indexOf(":");
+
+    if (separatorIndex === -1) {
+      throw new Error(`Sınıf bilgisi bulunamadı: "${line}"`);
+    }
+
+    classYear = normalizeClassYear(body.slice(0, separatorIndex));
+    courseName = body.slice(separatorIndex + 1).trim();
+  }
+
+  if (!classYear) {
+    throw new Error(`Sınıf bilgisi bulunamadı: "${line}"`);
+  }
+
+  return {
+    classYear,
+    programs,
+    courseName: courseName.trim(),
+    roomsText: match.groups.rooms.trim(),
+  };
+};
+
 const parseCellLines = (value: string, classYearHint: string | null, slotKey: string) => {
   const cards: ExamCard[] = [];
 
@@ -63,25 +107,16 @@ const parseCellLines = (value: string, classYearHint: string | null, slotKey: st
       continue;
     }
 
-    const match = trimmedLine.match(examLinePattern);
-
-    if (!match?.groups) {
-      throw new Error(`Sınav satırı çözümlenemedi: "${trimmedLine}"`);
-    }
-
-    const classYear = normalizeClassYear(match.groups.classYear ?? classYearHint ?? "");
-
-    if (!classYear) {
-      throw new Error(`Sınıf bilgisi bulunamadı: "${trimmedLine}"`);
-    }
+    const parsedLine = parseExamLine(trimmedLine, classYearHint);
 
     cards.push({
       id: createExamId(),
-      courseName: match.groups.courseName.trim(),
-      classYear,
+      courseName: parsedLine.courseName,
+      classYear: parsedLine.classYear,
+      programs: parsedLine.programs,
       slotKey,
-      rooms: splitRooms(match.groups.rooms),
-      locationText: match.groups.rooms.trim(),
+      rooms: splitRooms(parsedLine.roomsText),
+      locationText: parsedLine.roomsText,
       instructorText: null,
       parallelGroupId: null,
       notes: null,
@@ -196,20 +231,21 @@ const parseUnassignedSheet = (sheet?: XLSX.WorkSheet) => {
   });
   const exams: ExamCard[] = [];
   const headerRow = rows[1]?.map(cellToString) ?? [];
-  const instructorColumnIndex = headerRow.findIndex((value) =>
-    value.localeCompare("Hoca / Gözetmen", "tr", { sensitivity: "base" }) === 0,
-  );
-  const parallelColumnIndex = headerRow.findIndex((value) =>
-    value.localeCompare("Paralel Grup", "tr", { sensitivity: "base" }) === 0,
-  );
-  const notesColumnIndex = headerRow.findIndex((value) =>
-    value.localeCompare("Not", "tr", { sensitivity: "base" }) === 0,
-  );
+  const programsColumnIndex = findColumnIndex(headerRow, "Bölüm / Programlar");
+  const classColumnIndex = findColumnIndex(headerRow, "Sınıf");
+  const courseColumnIndex = findColumnIndex(headerRow, "Ders");
+  const locationColumnIndex = findColumnIndex(headerRow, "Derslik / Açıklama");
+  const instructorColumnIndex = findColumnIndex(headerRow, "Hoca / Gözetmen");
+  const parallelColumnIndex = findColumnIndex(headerRow, "Paralel Grup");
+  const notesColumnIndex = findColumnIndex(headerRow, "Not");
 
   for (const row of rows.slice(2)) {
-    const classYear = normalizeClassYear(cellToString(row[0]));
-    const courseName = cellToString(row[1]);
-    const rooms = splitRooms(cellToString(row[2]));
+    const classYear = normalizeClassYear(
+      cellToString(classColumnIndex >= 0 ? row[classColumnIndex] : row[0]),
+    );
+    const courseName = cellToString(courseColumnIndex >= 0 ? row[courseColumnIndex] : row[1]);
+    const locationText = cellToString(locationColumnIndex >= 0 ? row[locationColumnIndex] : row[2]);
+    const rooms = splitRooms(locationText);
 
     if (!classYear || !courseName) {
       continue;
@@ -218,9 +254,11 @@ const parseUnassignedSheet = (sheet?: XLSX.WorkSheet) => {
     exams.push({
       id: createExamId(),
       classYear,
+      programs:
+        programsColumnIndex >= 0 ? parseProgramsInput(cellToString(row[programsColumnIndex])) : [],
       courseName,
       rooms: rooms.length > 0 ? rooms : ["Belirlenecek"],
-      locationText: cellToString(row[2]) || "Belirlenecek",
+      locationText: locationText || "Belirlenecek",
       slotKey: UNASSIGNED_SLOT_KEY,
       instructorText:
         instructorColumnIndex >= 0 ? cellToString(row[instructorColumnIndex]) || null : null,
