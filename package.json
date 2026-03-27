@@ -1,0 +1,118 @@
+{
+  "name": "sinav-programi-robotu",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Sürükle-bırak sınav programı düzenleme ve otomatik planlama aracı",
+  "author": "Alparslan Güvenç",
+  "main": "electron/main.cjs",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 5173 --strictPort",
+    "dev:web": "vite --host 127.0.0.1 --port 5173 --strictPort",
+    "dev:desktop": "concurrently -k \"npm:dev:web\" \"wait-on tcp:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
+    "build": "npm run build:web",
+    "build:web": "tsc -b && vite build",
+    "lint": "eslint .",
+    "preview": "vite preview",
+    "test": "vitest",
+    "test:unit": "vitest run",
+    "test:e2e": "playwright test",
+    "package:mac": "npm run build:web && electron-builder --mac dmg --publish never",
+    "package:win": "npm run build:web && electron-builder --win nsis --publish never",
+    "package:all": "npm run build:web && electron-builder --mac dmg --win nsis --publish never",
+    "package:dir": "npm run build:web && electron-builder --dir --publish never"
+  },
+  "dependencies": {
+    "@dnd-kit/core": "^6.3.1",
+    "@dnd-kit/sortable": "^10.0.0",
+    "@dnd-kit/utilities": "^3.2.2",
+    "clsx": "^2.1.1",
+    "mammoth": "^1.12.0",
+    "pdfjs-dist": "^5.5.207",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "xlsx": "^0.18.5",
+    "xlsx-js-style": "^1.2.0",
+    "zustand": "^5.0.11"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "@playwright/test": "^1.58.2",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/node": "^24.10.1",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.1",
+    "concurrently": "^9.2.1",
+    "cross-env": "^10.1.0",
+    "electron": "^37.6.0",
+    "electron-builder": "^26.1.0",
+    "eslint": "^9.39.1",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "eslint-plugin-react-refresh": "^0.4.24",
+    "globals": "^16.5.0",
+    "hermes-parser": "^0.33.3",
+    "jsdom": "^28.1.0",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.48.0",
+    "vite": "^7.3.1",
+    "vitest": "^4.0.18",
+    "wait-on": "^9.0.3"
+  },
+  "build": {
+    "appId": "com.alparslanguvenc.sinavprogramirobotu",
+    "productName": "Sınav Programı Robotu",
+    "asar": true,
+    "directories": {
+      "output": "release",
+      "buildResources": "buildResources"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "artifactName": "Sinav-Programi-Robotu-${version}-${os}-${arch}.${ext}",
+    "mac": {
+      "category": "public.app-category.education",
+      "target": [
+        "dmg"
+      ],
+      "icon": "buildResources/icon.icns"
+    },
+    "dmg": {
+      "sign": false,
+      "window": {
+        "width": 540,
+        "height": 380
+      },
+      "contents": [
+        {
+          "x": 140,
+          "y": 190
+        },
+        {
+          "x": 400,
+          "y": 190,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "buildResources/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Sınav Programı Robotu"
+    }
+  }
+}
