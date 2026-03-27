@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">Sınav Programı Robotu</title>
+  <desc id="desc">Takvim ve robot başlığı birleşiminden oluşan uygulama simgesi.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0d4549"/>
+      <stop offset="100%" stop-color="#e36f4f"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="56" fill="url(#bg)"/>
+  <rect x="52" y="54" width="152" height="148" rx="26" fill="#fff8ef" opacity="0.96"/>
+  <rect x="52" y="54" width="152" height="34" rx="26" fill="#f4d8a5"/>
+  <circle cx="96" cy="71" r="7" fill="#0d4549"/>
+  <circle cx="160" cy="71" r="7" fill="#0d4549"/>
+  <rect x="76" y="108" width="104" height="56" rx="20" fill="#0d4549"/>
+  <circle cx="109" cy="136" r="10" fill="#fff8ef"/>
+  <circle cx="147" cy="136" r="10" fill="#fff8ef"/>
+  <rect x="106" y="175" width="44" height="10" rx="5" fill="#e36f4f"/>
+  <rect x="89" y="35" width="12" height="24" rx="6" fill="#fff8ef"/>
+  <rect x="155" y="35" width="12" height="24" rx="6" fill="#fff8ef"/>
+</svg>
