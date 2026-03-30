@@ -1,19 +1,25 @@
 import {
+  DEFAULT_EXAM_DURATION,
   doAudiencesOverlap,
   formatAudienceLabel,
   formatPrograms,
   isConflictResource,
   isFloatingSlot,
   normalizePrograms,
+  normalizeTimeInput,
   parseSlotKey,
+  SLOT_KEY_SEPARATOR,
 } from "./schedule";
-import type { Conflict, ExamCard } from "../types/schedule";
+import type { Conflict, ExamCard, SchoolProfile } from "../types/schedule";
 
 const createConflictId = (type: Conflict["type"], slotKey: string, resourceKey: string) =>
   `${type}:${slotKey}:${resourceKey}`;
 
 const haveSharedParallelGroup = (left: ExamCard, right: ExamCard) =>
   Boolean(left.parallelGroupId) && left.parallelGroupId === right.parallelGroupId;
+
+const haveSharedElectiveGroup = (left: ExamCard, right: ExamCard) =>
+  Boolean(left.electiveGroupId) && left.electiveGroupId === right.electiveGroupId;
 
 const getComponentResourceKey = (exams: ExamCard[]) => {
   const firstExam = exams[0];
@@ -36,15 +42,51 @@ const getComponentResourceKey = (exams: ExamCard[]) => {
   });
 };
 
-export const detectConflicts = (exams: ExamCard[]) => {
+/** Parse time from slot key to minutes since midnight */
+const slotTimeToMinutes = (slotKey: string): number | null => {
+  const { time } = parseSlotKey(slotKey);
+  const normalized = normalizeTimeInput(time);
+  if (!normalized) return null;
+  const [hours, minutes] = normalized.split(":").map(Number);
+  return hours * 60 + minutes;
+};
+
+/** Check if two exams in the same day have overlapping time ranges based on durations */
+const doTimesOverlap = (examA: ExamCard, examB: ExamCard): boolean => {
+  const startA = slotTimeToMinutes(examA.slotKey);
+  const startB = slotTimeToMinutes(examB.slotKey);
+  if (startA === null || startB === null) return false;
+
+  const endA = startA + (examA.durationMinutes ?? DEFAULT_EXAM_DURATION);
+  const endB = startB + (examB.durationMinutes ?? DEFAULT_EXAM_DURATION);
+
+  return startA < endB && startB < endA;
+};
+
+/** Get date part from slot key */
+const getSlotDate = (slotKey: string): string => {
+  const sepIndex = slotKey.indexOf(SLOT_KEY_SEPARATOR);
+  return sepIndex >= 0 ? slotKey.slice(0, sepIndex) : slotKey;
+};
+
+export interface ConflictDetectionOptions {
+  profile?: SchoolProfile | null;
+}
+
+export const detectConflicts = (
+  exams: ExamCard[],
+  options: ConflictDetectionOptions = {},
+) => {
   const roomUsage = new Map<string, Set<string>>();
   const slotClassUsage = new Map<string, ExamCard[]>();
+  const slotInstructorUsage = new Map<string, ExamCard[]>();
 
   for (const exam of exams) {
     if (isFloatingSlot(exam.slotKey)) {
       continue;
     }
 
+    // Room conflicts
     for (const room of new Set(exam.rooms.filter(isConflictResource))) {
       const key = `${exam.slotKey}::${room}`;
       const existing = roomUsage.get(key);
@@ -56,24 +98,37 @@ export const detectConflicts = (exams: ExamCard[]) => {
       }
     }
 
+    // Class conflicts
     const normalizedClassYear = exam.classYear.trim();
 
-    if (!normalizedClassYear) {
-      continue;
+    if (normalizedClassYear) {
+      const classKey = `${exam.slotKey}::${normalizedClassYear}`;
+      const classExams = slotClassUsage.get(classKey);
+
+      if (classExams) {
+        classExams.push(exam);
+      } else {
+        slotClassUsage.set(classKey, [exam]);
+      }
     }
 
-    const classKey = `${exam.slotKey}::${normalizedClassYear}`;
-    const classExams = slotClassUsage.get(classKey);
+    // Instructor conflicts
+    const instructor = exam.instructorText?.trim();
+    if (instructor) {
+      const instructorKey = `${exam.slotKey}::${instructor.toLocaleLowerCase("tr")}`;
+      const instructorExams = slotInstructorUsage.get(instructorKey);
 
-    if (classExams) {
-      classExams.push(exam);
-    } else {
-      slotClassUsage.set(classKey, [exam]);
+      if (instructorExams) {
+        instructorExams.push(exam);
+      } else {
+        slotInstructorUsage.set(instructorKey, [exam]);
+      }
     }
   }
 
   const conflicts: Conflict[] = [];
 
+  // Room conflicts
   for (const [key, cardIds] of roomUsage.entries()) {
     if (cardIds.size < 2) {
       continue;
@@ -90,6 +145,7 @@ export const detectConflicts = (exams: ExamCard[]) => {
     });
   }
 
+  // Class conflicts (audience overlap)
   for (const [key, slotExams] of slotClassUsage.entries()) {
     if (slotExams.length < 2) {
       continue;
@@ -106,7 +162,11 @@ export const detectConflicts = (exams: ExamCard[]) => {
         const leftExam = slotExams[leftIndex];
         const rightExam = slotExams[rightIndex];
 
-        if (!doAudiencesOverlap(leftExam, rightExam) || haveSharedParallelGroup(leftExam, rightExam)) {
+        if (
+          !doAudiencesOverlap(leftExam, rightExam) ||
+          haveSharedParallelGroup(leftExam, rightExam) ||
+          haveSharedElectiveGroup(leftExam, rightExam)
+        ) {
           continue;
         }
 
@@ -158,6 +218,108 @@ export const detectConflicts = (exams: ExamCard[]) => {
         cardIds: componentIds,
         severity: "warning",
       });
+    }
+  }
+
+  // Instructor conflicts
+  for (const [key, instructorExams] of slotInstructorUsage.entries()) {
+    if (instructorExams.length < 2) {
+      continue;
+    }
+
+    const [slotKey, instructorLower] = key.split("::");
+    const displayName = instructorExams[0].instructorText ?? instructorLower;
+
+    conflicts.push({
+      id: createConflictId("instructor", slotKey, instructorLower),
+      type: "instructor",
+      slotKey,
+      resourceKey: displayName,
+      cardIds: instructorExams.map((exam) => exam.id),
+      severity: "warning",
+    });
+  }
+
+  // Capacity conflicts (student count > room capacity)
+  const profile = options.profile ?? null;
+  if (profile?.roomCapacities) {
+    for (const exam of exams) {
+      if (isFloatingSlot(exam.slotKey)) continue;
+      const studentCount = exam.studentCount;
+      if (!studentCount || studentCount <= 0) continue;
+
+      for (const room of exam.rooms.filter(isConflictResource)) {
+        const capacity = profile.roomCapacities[room];
+        if (capacity && studentCount > capacity) {
+          conflicts.push({
+            id: createConflictId("capacity", exam.slotKey, `${room}:${exam.id}`),
+            type: "capacity",
+            slotKey: exam.slotKey,
+            resourceKey: `${room} (${capacity} kişilik) < ${studentCount} öğrenci`,
+            cardIds: [exam.id],
+            severity: "warning",
+          });
+        }
+      }
+    }
+  }
+
+  // Duration overlap conflicts (same day, overlapping time ranges, same resource)
+  const scheduledExams = exams.filter((exam) => !isFloatingSlot(exam.slotKey));
+  const examsByDate = new Map<string, ExamCard[]>();
+  for (const exam of scheduledExams) {
+    const date = getSlotDate(exam.slotKey);
+    const dateExams = examsByDate.get(date);
+    if (dateExams) {
+      dateExams.push(exam);
+    } else {
+      examsByDate.set(date, [exam]);
+    }
+  }
+
+  for (const [, dateExams] of examsByDate) {
+    for (let i = 0; i < dateExams.length; i++) {
+      for (let j = i + 1; j < dateExams.length; j++) {
+        const examA = dateExams[i];
+        const examB = dateExams[j];
+
+        // Skip same-slot exams (already handled by room/class checks)
+        if (examA.slotKey === examB.slotKey) continue;
+
+        // Check if durations make these overlap
+        if (!doTimesOverlap(examA, examB)) continue;
+
+        // Check for room overlap
+        const sharedRooms = examA.rooms
+          .filter(isConflictResource)
+          .filter((room) => examB.rooms.includes(room));
+
+        const pairKey = [examA.id, examB.id].sort().join("+");
+
+        for (const room of sharedRooms) {
+          conflicts.push({
+            id: createConflictId("duration-overlap", examA.slotKey, `${room}:${pairKey}`),
+            type: "duration-overlap",
+            slotKey: examA.slotKey,
+            resourceKey: `${room} — sınav süreleri çakışıyor`,
+            cardIds: [examA.id, examB.id],
+            severity: "warning",
+          });
+        }
+
+        // Check for audience overlap with duration
+        if (doAudiencesOverlap(examA, examB) && !haveSharedParallelGroup(examA, examB) && !haveSharedElectiveGroup(examA, examB)) {
+          const resourceKey = getComponentResourceKey([examA, examB]);
+          conflicts.push({
+            id: createConflictId("duration-overlap", examA.slotKey, `class:${resourceKey}:${pairKey}`),
+            type: "duration-overlap",
+            slotKey: examA.slotKey,
+            resourceKey: `${resourceKey} — sınav süreleri çakışıyor`,
+            cardIds: [examA.id, examB.id],
+            severity: "warning",
+          });
+        }
+      }
     }
   }
 

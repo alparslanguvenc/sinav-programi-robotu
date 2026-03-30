@@ -2,6 +2,8 @@ export interface ScheduleView {
   id: string;
   label: string;
   classYear: string | null;
+  /** Bölüm/program filtresi (null = tüm bölümler) */
+  program?: string | null;
 }
 
 export interface ScheduleTemplate {
@@ -21,11 +23,17 @@ export interface ExamCard {
   instructorText?: string | null;
   parallelGroupId: string | null;
   notes: string | null;
+  /** Sınav süresi (dakika). Varsayılan: 60 */
+  durationMinutes?: number;
+  /** Sınava girecek öğrenci sayısı (kapasite kontrolü için) */
+  studentCount?: number | null;
+  /** Seçmeli grup kimliği: aynı gruptaki sınavlar arasında sınıf çakışması algılanmaz */
+  electiveGroupId?: string | null;
 }
 
 export interface Conflict {
   id: string;
-  type: "room" | "class";
+  type: "room" | "class" | "instructor" | "capacity" | "duration-overlap";
   slotKey: string;
   resourceKey: string;
   cardIds: string[];
@@ -66,6 +74,12 @@ export interface SchoolProfile {
   rooms: string[];
   instructors: string[];
   courseTemplates: ProfileCourseTemplate[];
+  /** Varsayılan sınav süresi (dakika). Varsayılan: 60 */
+  defaultExamDuration?: number;
+  /** Derslik adı → kapasite eşlemesi */
+  roomCapacities?: Record<string, number>;
+  /** Opsiyonel Google Gemini API anahtarı */
+  geminiApiKey?: string;
 }
 
 export interface SavedScheduleRecord {

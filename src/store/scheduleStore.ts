@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { parseScheduleDocumentJson, serializeScheduleDocument } from "../lib/document";
+import { serializeScheduleDocument } from "../lib/document";
 import {
   ACTIVE_PROFILE_STORAGE_KEY,
   PROFILE_STORAGE_KEY,
@@ -57,6 +57,9 @@ interface ScheduleState {
   addTimeBlock: (time: string) => { ok: boolean; message: string; normalizedTime?: string };
   saveCurrentDocument: (name: string) => { ok: boolean; message: string; savedRecordId?: string };
   loadSavedRecord: (savedRecordId: string) => { ok: boolean; message: string };
+  newDocument: () => void;
+  deleteSavedRecord: (savedRecordId: string) => void;
+  clearAllRecords: () => void;
   toggleConflicts: () => void;
   undo: () => void;
   setUiScale: (uiScale: UiScale) => void;
@@ -330,50 +333,16 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
 
     const savedRecords = readSavedRecords();
     const profiles = readProfiles();
-    const activeSavedRecordId = readActiveSavedRecordId();
     const activeProfileId = readActiveProfileId();
-    const serialized = window.localStorage.getItem(STORAGE_KEY);
 
-    if (!serialized) {
-      const activeRecord =
-        activeSavedRecordId
-          ? savedRecords.find((record) => record.id === activeSavedRecordId) ?? null
-          : null;
-
-      if (activeRecord) {
-        const normalized = ensureViews(activeRecord.document);
-        persistDocument(normalized);
-        persistActiveSavedRecordId(activeRecord.id);
-        set((state) => ({
-          savedRecords,
-          profiles,
-          activeProfileId,
-          ...buildLoadedDocumentState(state.activeViewId, normalized, activeRecord.id),
-        }));
-        return true;
-      }
-
-      set({
-        savedRecords,
-        profiles,
-        activeSavedRecordId,
-        activeProfileId,
-      });
-      return false;
-    }
-
-    const document = parseScheduleDocumentJson(serialized);
-    const normalized = ensureViews(document);
-    persistDocument(normalized);
-    persistActiveSavedRecordId(activeSavedRecordId);
-    persistActiveProfileId(activeProfileId);
-    set((state) => ({
+    // Sadece profilleri ve kayıtları yükle — belge açma, kullanıcı seçsin
+    set({
       savedRecords,
       profiles,
-      ...buildLoadedDocumentState(state.activeViewId, normalized, activeSavedRecordId),
+      activeSavedRecordId: null,
       activeProfileId,
-    }));
-    return true;
+    });
+    return savedRecords.length > 0 || profiles.length > 0;
   },
   saveProfile: (profile) => {
     const normalized = normalizeSchoolProfile({
@@ -677,6 +646,48 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
       ok: true,
       message: `${savedRecord.name} açıldı.`,
     };
+  },
+  newDocument: () => {
+    persistDocument(null);
+    persistActiveSavedRecordId(null);
+    set({
+      document: null,
+      history: [],
+      activeSavedRecordId: null,
+      selectedCardId: null,
+      activeViewId: "genel",
+    });
+  },
+  deleteSavedRecord: (savedRecordId) => {
+    const state = get();
+    const nextRecords = state.savedRecords.filter((r) => r.id !== savedRecordId);
+    persistSavedRecords(nextRecords);
+    const nextActiveSavedRecordId =
+      state.activeSavedRecordId === savedRecordId ? null : state.activeSavedRecordId;
+    persistActiveSavedRecordId(nextActiveSavedRecordId);
+    set({
+      savedRecords: nextRecords,
+      activeSavedRecordId: nextActiveSavedRecordId,
+      ...(state.activeSavedRecordId === savedRecordId
+        ? { document: null, history: [], selectedCardId: null, activeViewId: "genel" }
+        : {}),
+    });
+    if (state.activeSavedRecordId === savedRecordId) {
+      persistDocument(null);
+    }
+  },
+  clearAllRecords: () => {
+    persistSavedRecords([]);
+    persistDocument(null);
+    persistActiveSavedRecordId(null);
+    set({
+      savedRecords: [],
+      document: null,
+      history: [],
+      activeSavedRecordId: null,
+      selectedCardId: null,
+      activeViewId: "genel",
+    });
   },
   toggleConflicts: () => set((state) => ({ conflictsOpen: !state.conflictsOpen })),
   undo: () =>

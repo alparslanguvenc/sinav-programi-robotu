@@ -20,6 +20,8 @@ import {
 import "./App.css";
 import { AttributionBanner } from "./components/AttributionBanner";
 import { ConflictList } from "./components/ConflictList";
+import { ContextMenu } from "./components/ContextMenu";
+import type { ContextMenuState } from "./components/ContextMenu";
 import { ExamCardPreview } from "./components/ExamCardView";
 import { InspectorPanel } from "./components/InspectorPanel";
 import { ProfilePanel } from "./components/ProfilePanel";
@@ -28,17 +30,14 @@ import { Toolbar } from "./components/Toolbar";
 import { UnassignedPanel } from "./components/UnassignedPanel";
 import { downloadBlob } from "./lib/browser";
 import { createConflictIndex, detectConflicts } from "./lib/conflicts";
-import { parseScheduleDocumentJson, serializeScheduleDocument } from "./lib/document";
-import { importScheduleFromFile } from "./lib/source-import";
+import { importScheduleFromFile, buildAutoScheduleDocument, extractCourseSeeds } from "./lib/source-import";
 import {
-  SAMPLE_FIXTURE_URL,
   UI_SCALE_VALUES,
   getActiveViewClassYear,
   isUnofferedSlot,
   isUnassignedSlot,
 } from "./lib/schedule";
 import { exportWorkbookArrayBuffer } from "./lib/xlsx-export";
-import { parseWorkbookArrayBuffer } from "./lib/xlsx-parser";
 import { useScheduleStore } from "./store/scheduleStore";
 import type { ExamCard, ScheduleDocument } from "./types/schedule";
 
@@ -48,7 +47,6 @@ type StatusBanner = {
 };
 
 interface AppProps {
-  sampleUrl?: string | null;
   bootstrapFromStorage?: boolean;
 }
 
@@ -59,6 +57,13 @@ const getDocumentFileStem = (document: ScheduleDocument | null) =>
     .replace(/^-+|-+$/g, "") || "vize-programi";
 
 const filterVisibleExams = (document: ScheduleDocument, activeViewId: string) => {
+  // Program-prefixed view IDs filter by program name
+  if (activeViewId.startsWith("program:")) {
+    const program = activeViewId.slice("program:".length);
+    return document.exams.filter((exam) =>
+      exam.programs.some((p) => p.toLocaleLowerCase("tr") === program.toLocaleLowerCase("tr")),
+    );
+  }
   const activeView = document.template.views.find((view) => view.id === activeViewId);
   return activeView?.classYear
     ? document.exams.filter((exam) => exam.classYear === activeView.classYear)
@@ -66,7 +71,6 @@ const filterVisibleExams = (document: ScheduleDocument, activeViewId: string) =>
 };
 
 export function AppShell({
-  sampleUrl = SAMPLE_FIXTURE_URL,
   bootstrapFromStorage = true,
 }: AppProps) {
   const document = useScheduleStore((state) => state.document);
@@ -83,6 +87,9 @@ export function AppShell({
   const hydrateFromStorage = useScheduleStore((state) => state.hydrateFromStorage);
   const saveCurrentDocument = useScheduleStore((state) => state.saveCurrentDocument);
   const loadSavedRecord = useScheduleStore((state) => state.loadSavedRecord);
+  const newDocument = useScheduleStore((state) => state.newDocument);
+  const deleteSavedRecord = useScheduleStore((state) => state.deleteSavedRecord);
+  const clearAllRecords = useScheduleStore((state) => state.clearAllRecords);
   const saveProfile = useScheduleStore((state) => state.saveProfile);
   const deleteProfile = useScheduleStore((state) => state.deleteProfile);
   const setActiveProfile = useScheduleStore((state) => state.setActiveProfile);
@@ -98,13 +105,14 @@ export function AppShell({
   const undo = useScheduleStore((state) => state.undo);
   const setUiScale = useScheduleStore((state) => state.setUiScale);
   const sourceInputRef = useRef<HTMLInputElement | null>(null);
-  const jsonInputRef = useRef<HTMLInputElement | null>(null);
   const dragDepthRef = useRef(0);
   const [busy, setBusy] = useState(false);
   const [booting, setBooting] = useState(true);
   const [status, setStatus] = useState<StatusBanner | null>(null);
   const [activeDraggedExam, setActiveDraggedExam] = useState<ExamCard | null>(null);
   const [fileDragActive, setFileDragActive] = useState(false);
+  const [useAI, setUseAI] = useState(true);
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const sensors = useSensors(
     useSensor(MouseSensor, {
       activationConstraint: {
@@ -114,65 +122,11 @@ export function AppShell({
   );
 
   useEffect(() => {
-    let cancelled = false;
-
-    const bootstrap = async () => {
-      if (bootstrapFromStorage && hydrateFromStorage()) {
-        if (!cancelled) {
-          setBooting(false);
-          setStatus({
-            tone: "info",
-            message: "Son otomatik kayıt yüklendi.",
-          });
-        }
-        return;
-      }
-
-      if (!sampleUrl) {
-        if (!cancelled) {
-          setBooting(false);
-        }
-        return;
-      }
-
-      try {
-        const response = await fetch(sampleUrl);
-
-        if (!response.ok) {
-          throw new Error("Örnek Excel dosyası alınamadı.");
-        }
-
-        const nextDocument = parseWorkbookArrayBuffer(await response.arrayBuffer());
-
-        if (cancelled) {
-          return;
-        }
-
-        startTransition(() => loadDocument(nextDocument));
-        setStatus({
-          tone: "info",
-          message: "Örnek vize programı açıldı. Kartları taşıyıp düzenleyebilirsiniz.",
-        });
-      } catch (error) {
-        if (!cancelled) {
-          setStatus({
-            tone: "error",
-            message: error instanceof Error ? error.message : "Örnek dosya yüklenemedi.",
-          });
-        }
-      } finally {
-        if (!cancelled) {
-          setBooting(false);
-        }
-      }
-    };
-
-    void bootstrap();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [bootstrapFromStorage, hydrateFromStorage, loadDocument, sampleUrl]);
+    if (bootstrapFromStorage) {
+      hydrateFromStorage();
+    }
+    setBooting(false);
+  }, [bootstrapFromStorage, hydrateFromStorage]);
 
   useEffect(() => {
     if (!status) {
@@ -245,25 +199,6 @@ export function AppShell({
     () => visibleExams.filter((exam) => isUnassignedSlot(exam.slotKey)),
     [visibleExams],
   );
-  const visibleConflicts = useMemo(() => {
-    if (!document) {
-      return [];
-    }
-
-    const visibleIds = new Set(visibleExams.map((exam) => exam.id));
-    return detectConflicts(document.exams).filter((conflict) =>
-      conflict.cardIds.some((cardId) => visibleIds.has(cardId)),
-    );
-  }, [document, visibleExams]);
-  const { conflictedCardIds, conflictedSlotKeys } = useMemo(
-    () => createConflictIndex(visibleConflicts),
-    [visibleConflicts],
-  );
-  const examLookup = useMemo(
-    () => new Map(document?.exams.map((exam) => [exam.id, exam]) ?? []),
-    [document],
-  );
-  const selectedExam = selectedCardId ? examLookup.get(selectedCardId) ?? null : null;
   const activeSavedRecord = useMemo(
     () =>
       activeSavedRecordId
@@ -275,6 +210,25 @@ export function AppShell({
     () => (activeProfileId ? profiles.find((profile) => profile.id === activeProfileId) ?? null : null),
     [activeProfileId, profiles],
   );
+  const visibleConflicts = useMemo(() => {
+    if (!document) {
+      return [];
+    }
+
+    const visibleIds = new Set(visibleExams.map((exam) => exam.id));
+    return detectConflicts(document.exams, { profile: activeProfile }).filter((conflict) =>
+      conflict.cardIds.some((cardId) => visibleIds.has(cardId)),
+    );
+  }, [document, visibleExams, activeProfile]);
+  const { conflictedCardIds, conflictedSlotKeys } = useMemo(
+    () => createConflictIndex(visibleConflicts),
+    [visibleConflicts],
+  );
+  const examLookup = useMemo(
+    () => new Map(document?.exams.map((exam) => [exam.id, exam]) ?? []),
+    [document],
+  );
+  const selectedExam = selectedCardId ? examLookup.get(selectedCardId) ?? null : null;
   const classYearOptions = useMemo(
     () =>
       [
@@ -313,15 +267,57 @@ export function AppShell({
     }
 
     const countsByClassYear = new Map<string, number>();
+    const countsByProgram = new Map<string, number>();
     for (const exam of document.exams) {
       countsByClassYear.set(exam.classYear, (countsByClassYear.get(exam.classYear) ?? 0) + 1);
+      for (const program of exam.programs) {
+        const key = program.toLocaleLowerCase("tr");
+        countsByProgram.set(key, (countsByProgram.get(key) ?? 0) + 1);
+      }
     }
 
-    return document.template.views.map((view) => ({
+    const classYearViews = document.template.views.map((view) => ({
       ...view,
       examCount: view.classYear ? (countsByClassYear.get(view.classYear) ?? 0) : document.exams.length,
     }));
+
+    // Dynamically add program views when there are multiple programs
+    const allPrograms = [...countsByProgram.entries()]
+      .filter(([, count]) => count > 0)
+      .sort(([a], [b]) => a.localeCompare(b, "tr"));
+
+    if (allPrograms.length <= 1) {
+      return classYearViews;
+    }
+
+    const programViews = allPrograms.map(([programLower, count]) => {
+      // Find the original casing from any exam
+      const originalName =
+        document.exams
+          .flatMap((exam) => exam.programs)
+          .find((p) => p.toLocaleLowerCase("tr") === programLower) ?? programLower;
+      return {
+        id: `program:${programLower}`,
+        label: originalName,
+        classYear: null as string | null,
+        examCount: count,
+      };
+    });
+
+    return [...classYearViews, ...programViews];
   }, [document]);
+  const activeProgramFilter = activeViewId.startsWith("program:")
+    ? activeViewId.slice("program:".length)
+    : null;
+
+  const programOptions = useMemo(() => {
+    const fromProfile = activeProfile?.programs ?? [];
+    const fromExams = document
+      ? [...new Set(document.exams.flatMap((e) => e.programs))]
+      : [];
+    return [...new Set([...fromProfile, ...fromExams])].sort((a, b) => a.localeCompare(b, "tr"));
+  }, [activeProfile, document]);
+
   const shellStyle = useMemo(
     () =>
       ({
@@ -350,8 +346,18 @@ export function AppShell({
       const result = await importScheduleFromFile(file, {
         profile: activeProfile,
         fallbackTemplate: document?.template ?? null,
+        useAI,
       });
-      setDocumentFromFile(result.document, result.message);
+
+      // AI denendi ama başarısız olduysa uyarı ver, kural tabanlı ile devam et
+      if (result.aiStatus && !result.aiStatus.used && result.aiStatus.error) {
+        setDocumentFromFile(
+          result.document,
+          `${result.message} ⚠️ AI analiz edemedi (${result.aiStatus.error}), kural tabanlı ayrıştırma kullanıldı.`,
+        );
+      } else {
+        setDocumentFromFile(result.document, result.message);
+      }
     } catch (error) {
       setStatus({
         tone: "error",
@@ -427,37 +433,6 @@ export function AppShell({
     };
   }, []);
 
-  const handleJsonUpload = async (file: File) => {
-    setBusy(true);
-
-    try {
-      const nextDocument = parseScheduleDocumentJson(await file.text());
-      setDocumentFromFile(nextDocument, `${file.name} içeriği açıldı.`);
-    } catch (error) {
-      setStatus({
-        tone: "error",
-        message: error instanceof Error ? error.message : "JSON dosyası okunamadı.",
-      });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleSaveJson = () => {
-    if (!document) {
-      return;
-    }
-
-    downloadBlob(
-      new Blob([serializeScheduleDocument(document)], { type: "application/json" }),
-      `${getDocumentFileStem(document)}.json`,
-    );
-    setStatus({
-      tone: "info",
-      message: "JSON çıktısı indirildi.",
-    });
-  };
-
   const handleSaveRecord = () => {
     if (!document) {
       return;
@@ -486,6 +461,24 @@ export function AppShell({
       tone: result.ok ? "info" : "error",
       message: result.message,
     });
+  };
+
+  const handleNewDocument = () => {
+    if (document) {
+      const confirmed = window.confirm("Mevcut program kapatılacak. Kaydedilmemiş değişiklikler kaybolur. Devam edilsin mi?");
+      if (!confirmed) return;
+    }
+    newDocument();
+    setStatus({ tone: "info", message: "Yeni boş program oluşturuldu." });
+  };
+
+  const handleDeleteSavedRecord = (savedRecordId: string) => {
+    const record = savedRecords.find((r) => r.id === savedRecordId);
+    if (!record) return;
+    const confirmed = window.confirm(`"${record.name}" kaydı silinsin mi? Bu işlem geri alınamaz.`);
+    if (!confirmed) return;
+    deleteSavedRecord(savedRecordId);
+    setStatus({ tone: "info", message: `"${record.name}" kaydı silindi.` });
   };
 
   const handleExportExcel = () => {
@@ -561,11 +554,56 @@ export function AppShell({
     });
   };
 
+  const handleRegenerate = () => {
+    if (!document) return;
+    const seeds = extractCourseSeeds(document.exams);
+    const regenerated = buildAutoScheduleDocument(
+      seeds,
+      document.sourceMeta.sourceFileName ?? "program",
+      { profile: activeProfile, fallbackTemplate: document.template },
+    );
+    startTransition(() => loadDocument(regenerated));
+    setStatus({ tone: "info", message: "Program çakışmasız olarak yeniden oluşturuldu." });
+  };
+
+  const handleProgramFilterChange = (program: string | null) => {
+    if (!program) {
+      setActiveView("genel");
+    } else {
+      setActiveView(`program:${program.toLocaleLowerCase("tr")}`);
+    }
+  };
+
+  const handleAddProgram = () => {
+    if (!activeProfile) {
+      setStatus({ tone: "error", message: "Önce bir okul profili seçin veya oluşturun." });
+      return;
+    }
+    const name = window.prompt("Yeni bölüm adını girin:");
+    if (!name?.trim()) return;
+    const trimmed = name.trim();
+    if (activeProfile.programs.some((p) => p.toLocaleLowerCase("tr") === trimmed.toLocaleLowerCase("tr"))) {
+      setStatus({ tone: "info", message: `"${trimmed}" bölümü zaten tanımlı.` });
+      return;
+    }
+    saveProfile({ ...activeProfile, programs: [...activeProfile.programs, trimmed] });
+    setStatus({ tone: "info", message: `"${trimmed}" bölümü profile eklendi.` });
+  };
+
+  const handleCardContextMenu = (examId: string, x: number, y: number) => {
+    const exam = document?.exams.find((e) => e.id === examId);
+    if (exam) {
+      setContextMenu({ x, y, exam });
+      selectCard(examId);
+    }
+  };
+
   const handleDragStart = (event: DragStartEvent) => {
     if (!document) {
       return;
     }
 
+    setContextMenu(null);
     const draggedExam = document.exams.find((exam) => exam.id === String(event.active.id));
     setActiveDraggedExam(draggedExam ?? null);
   };
@@ -601,20 +639,6 @@ export function AppShell({
           }
         }}
       />
-      <input
-        ref={jsonInputRef}
-        hidden
-        type="file"
-        accept=".json"
-        onChange={(event) => {
-          const file = event.target.files?.[0];
-          event.target.value = "";
-          if (file) {
-            void handleJsonUpload(file);
-          }
-        }}
-      />
-
       {fileDragActive ? (
         <div className="file-drop-overlay">
           <div className="file-drop-overlay__panel">
@@ -629,6 +653,8 @@ export function AppShell({
         viewSummaries={viewSummaries}
         savedRecordSummaries={savedRecordSummaries}
         profileSummaries={profileSummaries}
+        programOptions={programOptions}
+        activeProgramFilter={activeProgramFilter}
         activeViewId={activeViewId}
         activeSavedRecordId={activeSavedRecordId}
         activeProfileId={activeProfileId}
@@ -638,12 +664,16 @@ export function AppShell({
         conflictsOpen={conflictsOpen}
         busy={busy || booting}
         canUndo={historyCount > 0}
+        canRegenerate={Boolean(document)}
         uiScale={uiScale}
+        useAI={useAI}
+        hasGeminiKey={Boolean(activeProfile?.geminiApiKey?.trim())}
         onViewChange={setActiveView}
         onOpenSource={() => sourceInputRef.current?.click()}
-        onOpenJson={() => jsonInputRef.current?.click()}
+        onNewDocument={handleNewDocument}
         onSaveRecord={handleSaveRecord}
         onSavedRecordChange={handleSavedRecordChange}
+        onDeleteSavedRecord={handleDeleteSavedRecord}
         onProfileChange={(profileId) => {
           setActiveProfile(profileId);
           setStatus({
@@ -653,13 +683,16 @@ export function AppShell({
               : "Profil seçimi temizlendi.",
           });
         }}
-        onSaveJson={handleSaveJson}
         onExportExcel={handleExportExcel}
+        onProgramFilterChange={handleProgramFilterChange}
+        onAddProgram={handleAddProgram}
         onToggleConflicts={toggleConflicts}
         onAddExam={handleToolbarAddExam}
         onAddTimeBlock={handleAddTimeBlock}
         onUndo={handleUndo}
+        onRegenerate={handleRegenerate}
         onUiScaleChange={setUiScale}
+        onToggleAI={() => setUseAI((prev) => !prev)}
       />
 
       {status ? (
@@ -669,12 +702,93 @@ export function AppShell({
       {!document ? (
         <main className="workspace workspace--empty">
           <section className="empty-state">
-            <h2>Başlamak için bir ders programı ya da sınav çizelgesi yükleyin</h2>
-            <p>
-              Excel, PDF veya Word dosyasını sürükleyip bırakabilirsiniz. Sınav çizelgesi gelirse
-              doğrudan açılır; ders programı gelirse aktif okul profiline göre otomatik sınav taslağı
-              üretilir.
+            <h2>Sınav Programı Oluşturmaya Başlayın</h2>
+            <p style={{ marginBottom: "16px" }}>
+              Okulunuzun ders programını (Excel, PDF veya Word) sürükleyip bırakın.
+              Dersler otomatik olarak sınav takviminde çakışmasız biçimde yerleştirilir.
             </p>
+
+            <div style={{ display: "flex", gap: "10px", justifyContent: "center", marginBottom: "24px" }}>
+              <button
+                type="button"
+                className="button button--accent"
+                style={{ padding: "10px 24px", fontSize: "1em" }}
+                onClick={() => sourceInputRef.current?.click()}
+              >
+                Dosya Yükle
+              </button>
+            </div>
+
+            {savedRecordSummaries.length > 0 ? (
+              <div className="saved-records-grid">
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", maxWidth: "480px", margin: "0 auto 12px" }}>
+                  <h3 style={{ margin: 0, fontSize: "1em", color: "var(--ink)" }}>
+                    Kayıtlı Programlar
+                  </h3>
+                  <button
+                    type="button"
+                    className="button button--danger-ghost"
+                    style={{ fontSize: "0.8em", padding: "4px 10px" }}
+                    onClick={() => {
+                      if (window.confirm("Tüm kayıtlı programlar silinsin mi? Bu işlem geri alınamaz.")) {
+                        clearAllRecords();
+                        setStatus({ tone: "info", message: "Tüm kayıtlar silindi." });
+                      }
+                    }}
+                  >
+                    Tümünü sil
+                  </button>
+                </div>
+                <div style={{ display: "grid", gap: "8px", maxWidth: "480px", margin: "0 auto" }}>
+                  {savedRecordSummaries.map((record) => (
+                    <div key={record.id} className="saved-record-card-row">
+                      <button
+                        type="button"
+                        className="saved-record-card"
+                        onClick={() => handleSavedRecordChange(record.id)}
+                      >
+                        <span className="saved-record-card__name">{record.name}</span>
+                        <span className="saved-record-card__date">
+                          {new Date(record.updatedAt).toLocaleDateString("tr-TR", {
+                            day: "numeric",
+                            month: "long",
+                            year: "numeric",
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })}
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        className="saved-record-card__delete"
+                        title="Bu kaydı sil"
+                        onClick={() => handleDeleteSavedRecord(record.id)}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
+            <div style={{ display: "grid", gap: "10px", maxWidth: "420px", margin: "24px auto 0", textAlign: "left" }}>
+              <h3 style={{ margin: "0 0 4px", fontSize: "0.95em", color: "var(--muted)", textAlign: "center" }}>
+                Nasıl Kullanılır?
+              </h3>
+              <div style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
+                <span style={{ background: "var(--accent-bg)", color: "var(--accent)", borderRadius: "6px", padding: "2px 8px", fontWeight: 700, flexShrink: 0 }}>1</span>
+                <span style={{ color: "var(--muted)", fontSize: "0.92em" }}>Sağdaki panelden bir <strong>okul profili</strong> oluşturun (bölümler, derslikler, saatler)</span>
+              </div>
+              <div style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
+                <span style={{ background: "var(--accent-bg)", color: "var(--accent)", borderRadius: "6px", padding: "2px 8px", fontWeight: 700, flexShrink: 0 }}>2</span>
+                <span style={{ color: "var(--muted)", fontSize: "0.92em" }}>Ders programı dosyasını <strong>sürükleyip bırakın</strong> veya "Dosya yükle" butonunu kullanın</span>
+              </div>
+              <div style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
+                <span style={{ background: "var(--accent-bg)", color: "var(--accent)", borderRadius: "6px", padding: "2px 8px", fontWeight: 700, flexShrink: 0 }}>3</span>
+                <span style={{ color: "var(--muted)", fontSize: "0.92em" }}>Sınavları <strong>sürükleyerek</strong> düzenleyin, çakışmaları kontrol edin ve Excel olarak dışa aktarın</span>
+              </div>
+            </div>
           </section>
 
           <aside className="workspace__sidebar">
@@ -694,9 +808,9 @@ export function AppShell({
             <section className="workspace__board">
               <div className="workspace__board-header">
                 <div>
-                  <h2>Çizelge</h2>
+                  <h2>Sınav Çizelgesi</h2>
                   <p>
-                    Kartları havuzdan çizelgeye, çizelgeden tekrar havuza veya başka bir slota taşıyabilirsiniz. Aynı sınıf yılı farklı bölümlerde paylaşılıyorsa kart üstündeki program bilgisi çakışma hesabına dahil edilir.
+                    Kartları sürükleyerek taşıyın. Derslik, sınıf, hoca ve süre çakışmaları otomatik tespit edilir.
                   </p>
                 </div>
               </div>
@@ -713,6 +827,7 @@ export function AppShell({
                   onAddExam={(slotKey) =>
                     addExam(slotKey, getActiveViewClassYear(document, activeViewId))
                   }
+                  onCardContextMenu={handleCardContextMenu}
                 />
               </div>
             </section>
@@ -723,6 +838,7 @@ export function AppShell({
                 selectedCardId={selectedCardId}
                 conflictedCardIds={conflictedCardIds}
                 onSelectCard={selectCard}
+                onCardContextMenu={handleCardContextMenu}
               />
               <InspectorPanel
                 exam={selectedExam}
@@ -759,6 +875,26 @@ export function AppShell({
           </DragOverlay>
         </DndContext>
       )}
+
+      {contextMenu ? (
+        <ContextMenu
+          state={contextMenu}
+          onClose={() => setContextMenu(null)}
+          onSetDuration={(examId, duration) => {
+            updateExam(examId, { durationMinutes: duration });
+            setStatus({ tone: "info", message: `Sınav süresi ${duration} dakika olarak güncellendi.` });
+          }}
+          onSetElectiveGroup={(examId, groupId) => {
+            updateExam(examId, { electiveGroupId: groupId });
+            setStatus({
+              tone: "info",
+              message: groupId
+                ? `Seçmeli grup "${groupId}" olarak ayarlandı.`
+                : "Seçmeli grup kaldırıldı.",
+            });
+          }}
+        />
+      ) : null}
     </div>
   );
 }

@@ -2,7 +2,7 @@ import { useDraggable } from "@dnd-kit/core";
 import { CSS } from "@dnd-kit/utilities";
 import clsx from "clsx";
 import type { PropsWithChildren } from "react";
-import { formatClassLabel, formatLocationText, formatPrograms } from "../lib/schedule";
+import { DEFAULT_EXAM_DURATION, formatClassLabel, formatLocationText, formatPrograms } from "../lib/schedule";
 import type { ExamCard } from "../types/schedule";
 
 interface ExamCardBaseProps {
@@ -14,6 +14,7 @@ interface ExamCardBaseProps {
 
 interface ExamCardViewProps extends ExamCardBaseProps {
   onSelect: (cardId: string) => void;
+  onContextMenu?: (examId: string, x: number, y: number) => void;
 }
 
 const ExamCardBody = ({
@@ -21,6 +22,7 @@ const ExamCardBody = ({
   children,
 }: PropsWithChildren<ExamCardBaseProps>) => {
   const programsText = formatPrograms(exam.programs);
+  const duration = exam.durationMinutes ?? DEFAULT_EXAM_DURATION;
 
   return (
     <>
@@ -34,6 +36,15 @@ const ExamCardBody = ({
       {exam.parallelGroupId ? (
         <span className="exam-card__group">Paralel: {exam.parallelGroupId}</span>
       ) : null}
+      {exam.electiveGroupId ? (
+        <span className="exam-card__group exam-card__group--elective">Seçmeli: {exam.electiveGroupId}</span>
+      ) : null}
+      <span className="exam-card__meta">
+        <span className="exam-card__badge exam-card__badge--duration">{duration} dk</span>
+        {exam.studentCount ? (
+          <span className="exam-card__badge exam-card__badge--students">{exam.studentCount} kişi</span>
+        ) : null}
+      </span>
       {children}
     </>
   );
@@ -45,6 +56,7 @@ export const ExamCardView = ({
   conflicted,
   compactClassLabel,
   onSelect,
+  onContextMenu,
 }: ExamCardViewProps) => {
   const { attributes, listeners, setNodeRef, transform } = useDraggable({
     id: exam.id,
@@ -64,6 +76,12 @@ export const ExamCardView = ({
       })}
       style={{ transform: CSS.Translate.toString(transform) }}
       onClick={() => onSelect(exam.id)}
+      onContextMenu={(event) => {
+        if (onContextMenu) {
+          event.preventDefault();
+          onContextMenu(exam.id, event.clientX, event.clientY);
+        }
+      }}
       data-testid={`exam-card-${exam.id}`}
       data-course-name={exam.courseName}
       {...listeners}

@@ -27,6 +27,8 @@ const TABLE_HEADERS = [
   "Saat",
   "Derslik",
   "Hoca / Gözetmen",
+  "Süre (dk)",
+  "Öğrenci",
 ] as const;
 const TABLE_COLUMN_COUNT = TABLE_HEADERS.length;
 
@@ -474,6 +476,8 @@ const createUnassignedWorksheet = (document: ScheduleDocument) => {
       "Hoca / Gözetmen",
       "Paralel Grup",
       "Not",
+      "Süre (dk)",
+      "Öğrenci",
     ],
   ];
 
@@ -489,18 +493,22 @@ const createUnassignedWorksheet = (document: ScheduleDocument) => {
         exam.instructorText ?? null,
         exam.parallelGroupId,
         exam.notes,
+        String(exam.durationMinutes ?? 60),
+        exam.studentCount ? String(exam.studentCount) : "",
       ]);
   }
 
   return XLSX.utils.aoa_to_sheet(rows);
 };
 
-const createSectionRow = (label: string) => [label, "", "", "", "", "", ""];
+const createSectionRow = (label: string) => [label, ...Array(TABLE_COLUMN_COUNT - 1).fill("")];
 
 const createTableWorksheet = (document: ScheduleDocument) => {
+  const emptyRow = () => Array(TABLE_COLUMN_COUNT).fill("") as string[];
+  const titleRow = (text: string) => { const r = emptyRow(); r[0] = text; return r; };
   const rows: string[][] = [
-    [getGeneralTitle(document), "", "", "", "", "", ""],
-    ["TABLO GÖRÜNÜMÜ", "", "", "", "", "", ""],
+    titleRow(getGeneralTitle(document)),
+    titleRow("TABLO GÖRÜNÜMÜ"),
   ];
   const rowKinds: TableRowKind[] = ["title", "subtitle"];
   const merges = [
@@ -540,6 +548,8 @@ const createTableWorksheet = (document: ScheduleDocument) => {
         slot.time,
         formatLocationText(exam),
         exam.instructorText ?? "",
+        String(exam.durationMinutes ?? 60),
+        exam.studentCount ? String(exam.studentCount) : "",
       ]);
       rowKinds.push("data");
     }
@@ -573,12 +583,14 @@ const createTableWorksheet = (document: ScheduleDocument) => {
           "",
           formatLocationText(exam),
           exam.instructorText ?? "",
+          String(exam.durationMinutes ?? 60),
+          exam.studentCount ? String(exam.studentCount) : "",
         ]);
         rowKinds.push("data");
       }
     }
 
-    rows.push(["", "", "", "", "", "", ""]);
+    rows.push(emptyRow());
     rowKinds.push("spacer");
   }
 
@@ -592,6 +604,8 @@ const createTableWorksheet = (document: ScheduleDocument) => {
     { wch: 12 },
     { wch: 18 },
     { wch: 24 },
+    { wch: 10 },
+    { wch: 10 },
   ];
   applyTableStyles(sheet, rowKinds);
 

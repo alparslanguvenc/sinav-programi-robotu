@@ -1,4 +1,5 @@
 import {
+  DEFAULT_EXAM_DURATION,
   formatPrograms,
   formatRooms,
   normalizeClassYear,
@@ -40,6 +41,9 @@ export const createBlankProfile = (name = "Yeni Okul Profili"): SchoolProfile =>
   rooms: [],
   instructors: [],
   courseTemplates: [],
+  defaultExamDuration: DEFAULT_EXAM_DURATION,
+  roomCapacities: {},
+  geminiApiKey: undefined,
 });
 
 const normalizeCourseTemplate = (
@@ -93,6 +97,19 @@ export const normalizeSchoolProfile = (profile: SchoolProfile): SchoolProfile =>
       return left.courseName.localeCompare(right.courseName, "tr");
     });
 
+  const duration = profile.defaultExamDuration;
+  const defaultExamDuration =
+    typeof duration === "number" && duration > 0 ? duration : DEFAULT_EXAM_DURATION;
+
+  const rawCapacities = profile.roomCapacities ?? {};
+  const roomCapacities: Record<string, number> = {};
+  for (const [key, value] of Object.entries(rawCapacities)) {
+    const trimmedKey = key.trim();
+    if (trimmedKey && typeof value === "number" && value > 0) {
+      roomCapacities[trimmedKey] = value;
+    }
+  }
+
   return {
     ...profile,
     id: profile.id || crypto.randomUUID(),
@@ -105,6 +122,9 @@ export const normalizeSchoolProfile = (profile: SchoolProfile): SchoolProfile =>
     rooms,
     instructors,
     courseTemplates,
+    defaultExamDuration,
+    roomCapacities,
+    geminiApiKey: profile.geminiApiKey?.trim() || undefined,
   };
 };
 
@@ -179,5 +199,7 @@ export const buildProfileFromDocument = (
     rooms,
     instructors,
     courseTemplates,
+    defaultExamDuration: DEFAULT_EXAM_DURATION,
+    roomCapacities: {},
   });
 };

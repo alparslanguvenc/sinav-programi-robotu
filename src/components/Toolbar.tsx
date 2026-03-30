@@ -21,6 +21,8 @@ interface ToolbarProps {
   viewSummaries: ViewSummary[];
   savedRecordSummaries: SavedRecordSummary[];
   profileSummaries: ProfileSummary[];
+  programOptions: string[];
+  activeProgramFilter: string | null;
   activeViewId: string;
   activeSavedRecordId: string | null;
   activeProfileId: string | null;
@@ -30,26 +32,35 @@ interface ToolbarProps {
   conflictsOpen: boolean;
   busy: boolean;
   canUndo: boolean;
+  canRegenerate: boolean;
   uiScale: UiScale;
+  useAI: boolean;
+  hasGeminiKey: boolean;
   onViewChange: (viewId: string) => void;
   onOpenSource: () => void;
-  onOpenJson: () => void;
+  onNewDocument: () => void;
   onSaveRecord: () => void;
   onSavedRecordChange: (savedRecordId: string) => void;
+  onDeleteSavedRecord: (savedRecordId: string) => void;
   onProfileChange: (profileId: string | null) => void;
-  onSaveJson: () => void;
+  onProgramFilterChange: (program: string | null) => void;
+  onAddProgram: () => void;
   onExportExcel: () => void;
   onToggleConflicts: () => void;
   onAddExam: () => void;
   onAddTimeBlock: () => void;
   onUndo: () => void;
+  onRegenerate: () => void;
   onUiScaleChange: (uiScale: UiScale) => void;
+  onToggleAI: () => void;
 }
 
 export const Toolbar = ({
   viewSummaries,
   savedRecordSummaries,
   profileSummaries,
+  programOptions,
+  activeProgramFilter,
   activeViewId,
   activeSavedRecordId,
   activeProfileId,
@@ -59,27 +70,41 @@ export const Toolbar = ({
   conflictsOpen,
   busy,
   canUndo,
+  canRegenerate,
   uiScale,
+  useAI,
+  hasGeminiKey,
   onViewChange,
   onOpenSource,
-  onOpenJson,
+  onNewDocument,
   onSaveRecord,
   onSavedRecordChange,
+  onDeleteSavedRecord,
   onProfileChange,
-  onSaveJson,
+  onProgramFilterChange,
+  onAddProgram,
   onExportExcel,
   onToggleConflicts,
   onAddExam,
   onAddTimeBlock,
   onUndo,
+  onRegenerate,
   onUiScaleChange,
+  onToggleAI,
 }: ToolbarProps) => (
   <header className="toolbar">
     <div className="toolbar__brand">
-      <p className="toolbar__eyebrow">Kurum profilli masaüstü çizelge aracı</p>
+      <p className="toolbar__eyebrow">Üniversite Sınav Planlama Aracı</p>
       <h1>Sınav Programı Robotu</h1>
       <p className="toolbar__summary">
-        {visibleExamCount}/{totalExamCount} kart görünür · {visibleConflictCount} aktif uyarı
+        {visibleExamCount}/{totalExamCount} sınav{" "}
+        {visibleConflictCount > 0 ? (
+          <span style={{ color: "var(--danger)", fontWeight: 700 }}>
+            · {visibleConflictCount} çakışma
+          </span>
+        ) : (
+          <span style={{ color: "var(--success)" }}>· Çakışma yok</span>
+        )}
       </p>
     </div>
 
@@ -90,7 +115,7 @@ export const Toolbar = ({
           <select value={activeViewId} onChange={(event) => onViewChange(event.target.value)}>
             {viewSummaries.map((view) => (
               <option key={view.id} value={view.id}>
-                {view.label}
+                {view.id.startsWith("program:") ? `[Bölüm] ${view.label}` : view.label}
               </option>
             ))}
           </select>
@@ -109,32 +134,58 @@ export const Toolbar = ({
             >
               <span className="toolbar__view-chip-label">{view.label}</span>
               <span className="toolbar__view-chip-meta">
-                {view.classYear ? `${view.examCount} sınav` : `Genel görünüm · ${view.examCount} sınav`}
+                {view.classYear
+                  ? `${view.examCount} sınav`
+                  : view.id.startsWith("program:")
+                    ? `Bölüm · ${view.examCount}`
+                    : `Tümü · ${view.examCount}`}
               </span>
             </button>
           ))}
         </div>
       </div>
 
-      <label className="toolbar__select">
-        Kayıtlar
-        <select
-          aria-label="Kayıtlar"
-          value={activeSavedRecordId ?? ""}
-          onChange={(event) => {
-            if (event.target.value) {
-              onSavedRecordChange(event.target.value);
-            }
-          }}
-        >
-          <option value="">Geçici çalışma</option>
-          {savedRecordSummaries.map((record) => (
-            <option key={record.id} value={record.id}>
-              {record.name}
-            </option>
-          ))}
-        </select>
-      </label>
+      <div className="toolbar__record-block">
+        <label className="toolbar__select" style={{ flex: 1, minWidth: 0 }}>
+          Kayıtlar
+          <select
+            aria-label="Kayıtlar"
+            value={activeSavedRecordId ?? ""}
+            onChange={(event) => {
+              if (event.target.value) {
+                onSavedRecordChange(event.target.value);
+              }
+            }}
+          >
+            <option value="">— Geçici çalışma —</option>
+            {savedRecordSummaries.map((record) => (
+              <option key={record.id} value={record.id}>
+                {record.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="toolbar__record-actions">
+          <button
+            type="button"
+            className="button button--ghost"
+            title="Yeni boş program oluştur"
+            onClick={onNewDocument}
+          >
+            + Yeni
+          </button>
+          {activeSavedRecordId ? (
+            <button
+              type="button"
+              className="button button--danger-ghost"
+              title="Bu kaydı sil"
+              onClick={() => onDeleteSavedRecord(activeSavedRecordId)}
+            >
+              Sil
+            </button>
+          ) : null}
+        </div>
+      </div>
 
       <label className="toolbar__select">
         Okul profili
@@ -152,6 +203,32 @@ export const Toolbar = ({
         </select>
       </label>
 
+      <div className="toolbar__program-block">
+        <label className="toolbar__select" style={{ flex: 1, minWidth: 0 }}>
+          Bölüm filtresi
+          <select
+            aria-label="Bölüm filtresi"
+            value={activeProgramFilter ?? ""}
+            onChange={(event) => onProgramFilterChange(event.target.value || null)}
+          >
+            <option value="">Tüm bölümler</option>
+            {programOptions.map((program) => (
+              <option key={program} value={program}>
+                {program}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button
+          type="button"
+          className="button button--ghost toolbar__add-program-btn"
+          title="Aktif profile yeni bölüm ekle"
+          onClick={onAddProgram}
+        >
+          + Bölüm
+        </button>
+      </div>
+
       <label className="toolbar__select">
         Boyut
         <select value={uiScale} onChange={(event) => onUiScaleChange(event.target.value as UiScale)}>
@@ -162,42 +239,66 @@ export const Toolbar = ({
       </label>
 
       <div className="toolbar__actions">
+        {/* Dosya grubu */}
         <button type="button" className="button button--ghost" onClick={onOpenSource}>
           Dosya yükle
         </button>
-        <button type="button" className="button button--ghost" onClick={onOpenJson}>
-          JSON yükle
+        <button
+          type="button"
+          className="button button--accent"
+          disabled={!canRegenerate || busy}
+          title="Mevcut dersleri yeni saatler ve bölümlerle çakışmasız yeniden çizelgele"
+          onClick={onRegenerate}
+        >
+          Yeniden oluştur
         </button>
         <button type="button" className="button button--accent" onClick={onSaveRecord}>
           Kaydet
         </button>
-        <button type="button" className="button" onClick={onSaveJson}>
-          JSON kaydet
-        </button>
         <button type="button" className="button" onClick={onExportExcel}>
-          Excel dışa aktar
+          Excel aktar
         </button>
+
+        {/* Düzenleme grubu */}
         <button type="button" className="button button--ghost" onClick={onAddExam}>
           Yeni kart
         </button>
         <button type="button" className="button button--ghost" onClick={onAddTimeBlock}>
-          Saat bloğu ekle
+          Saat ekle
         </button>
         <button type="button" className="button button--ghost" onClick={onUndo} disabled={!canUndo}>
           Geri al
         </button>
+
+        {/* AI toggle */}
+        {hasGeminiKey ? (
+          <button
+            type="button"
+            className={clsx("button", {
+              "button--accent": useAI,
+              "button--ghost": !useAI,
+            })}
+            onClick={onToggleAI}
+            title={useAI ? "AI destekli ayrıştırma açık" : "AI destekli ayrıştırma kapalı"}
+          >
+            AI {useAI ? "Açık" : "Kapalı"}
+          </button>
+        ) : null}
+
+        {/* Çakışma butonu */}
         <button
           type="button"
-          className={clsx("button", "button--ghost", {
+          className={clsx("button", {
             "button--warning": visibleConflictCount > 0,
+            "button--ghost": visibleConflictCount === 0,
           })}
           onClick={onToggleConflicts}
         >
-          Çakışmalar {conflictsOpen ? "kapat" : "aç"}
+          Çakışmalar ({visibleConflictCount}) {conflictsOpen ? "▲" : "▼"}
         </button>
       </div>
     </div>
 
-    {busy ? <div className="toolbar__busy">Dosya işleniyor…</div> : null}
+    {busy ? <div className="toolbar__busy">Dosya işleniyor...</div> : null}
   </header>
 );

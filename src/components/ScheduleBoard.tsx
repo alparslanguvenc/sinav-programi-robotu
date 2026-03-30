@@ -19,6 +19,7 @@ interface ScheduleBoardProps {
   activeViewId: string;
   onSelectCard: (cardId: string) => void;
   onAddExam: (slotKey: string) => void;
+  onCardContextMenu?: (examId: string, x: number, y: number) => void;
 }
 
 interface SlotCellProps {
@@ -30,6 +31,7 @@ interface SlotCellProps {
   compactClassLabel: boolean;
   onSelectCard: (cardId: string) => void;
   onAddExam: (slotKey: string) => void;
+  onCardContextMenu?: (examId: string, x: number, y: number) => void;
 }
 
 const SlotCell = ({
@@ -41,6 +43,7 @@ const SlotCell = ({
   compactClassLabel,
   onSelectCard,
   onAddExam,
+  onCardContextMenu,
 }: SlotCellProps) => {
   const { isOver, setNodeRef } = useDroppable({
     id: slotKey,
@@ -77,6 +80,7 @@ const SlotCell = ({
             conflicted={conflictedCardIds.has(exam.id)}
             compactClassLabel={compactClassLabel}
             onSelect={onSelectCard}
+            onContextMenu={onCardContextMenu}
           />
         ))}
       </div>
@@ -94,6 +98,7 @@ interface SecondarySlotProps {
   onSelectCard: (cardId: string) => void;
   onAddExam: (slotKey: string) => void;
   minContentWidth: number;
+  onCardContextMenu?: (examId: string, x: number, y: number) => void;
 }
 
 const SecondarySlot = ({
@@ -106,6 +111,7 @@ const SecondarySlot = ({
   onSelectCard,
   onAddExam,
   minContentWidth,
+  onCardContextMenu,
 }: SecondarySlotProps) => {
   const { isOver, setNodeRef } = useDroppable({
     id: slotKey,
@@ -147,6 +153,7 @@ const SecondarySlot = ({
               conflicted={conflictedCardIds.has(exam.id)}
               compactClassLabel={compactClassLabel}
               onSelect={onSelectCard}
+              onContextMenu={onCardContextMenu}
             />
           ))}
         </div>
@@ -164,6 +171,7 @@ export const ScheduleBoard = ({
   activeViewId,
   onSelectCard,
   onAddExam,
+  onCardContextMenu,
 }: ScheduleBoardProps) => {
   const groupedExams = useMemo(() => groupExamsBySlot(document, exams), [document, exams]);
   const compactClassLabel = activeViewId !== "genel";
@@ -201,6 +209,7 @@ export const ScheduleBoard = ({
                 compactClassLabel={compactClassLabel}
                 onSelectCard={onSelectCard}
                 onAddExam={onAddExam}
+                onCardContextMenu={onCardContextMenu}
               />
             );
           }),
@@ -217,6 +226,7 @@ export const ScheduleBoard = ({
         onSelectCard={onSelectCard}
         onAddExam={onAddExam}
         minContentWidth={minContentWidth}
+        onCardContextMenu={onCardContextMenu}
       />
     </div>
   );

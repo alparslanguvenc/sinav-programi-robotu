@@ -242,6 +242,8 @@ export const normalizeDocument = (document: ScheduleDocument): ScheduleDocument 
     instructorText: exam.instructorText?.trim() || null,
     parallelGroupId: exam.parallelGroupId?.trim() || null,
     notes: exam.notes?.trim() || null,
+    durationMinutes: exam.durationMinutes ?? DEFAULT_EXAM_DURATION,
+    studentCount: exam.studentCount ?? null,
   }));
 
   const classYears = new Set<string>([
@@ -259,10 +261,13 @@ export const normalizeDocument = (document: ScheduleDocument): ScheduleDocument 
   };
 };
 
+export const DEFAULT_EXAM_DURATION = 60;
+
 export const createBlankExam = (
   slotKey: string,
   classYear: string,
   programs: string[] = [],
+  durationMinutes: number = DEFAULT_EXAM_DURATION,
 ): ExamCard => ({
   id: createExamId(),
   courseName: "Yeni Sınav",
@@ -274,6 +279,8 @@ export const createBlankExam = (
   instructorText: null,
   parallelGroupId: null,
   notes: null,
+  durationMinutes,
+  studentCount: null,
 });
 
 export const getActiveViewClassYear = (

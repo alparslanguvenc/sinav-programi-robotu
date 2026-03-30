@@ -25,3 +25,15 @@ playwright-report
 *.njsproj
 *.sln
 *.sw?
+
+# Secrets & environment variables — NEVER commit these
+.env
+.env.*
+*.pem
+*.key
+secrets.json
+credentials.json
+
+# User-uploaded files (never commit)
+uploads/
+user-data/

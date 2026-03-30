@@ -8,13 +8,17 @@ interface ConflictListProps {
   onSelectCard: (cardId: string) => void;
 }
 
+const CONFLICT_TYPE_LABELS: Record<Conflict["type"], string> = {
+  room: "Derslik",
+  class: "Sınıf",
+  instructor: "Hoca",
+  capacity: "Kapasite",
+  "duration-overlap": "Süre",
+};
+
 const getConflictTitle = (conflict: Conflict) => {
   const { date, time } = parseSlotKey(conflict.slotKey);
-  const target =
-    conflict.type === "room"
-      ? `Derslik ${conflict.resourceKey}`
-      : `${conflict.resourceKey} grubu`;
-  return `${date} · ${time} · ${target}`;
+  return `${date} · ${time}`;
 };
 
 const getConflictDescription = (conflict: Conflict, examLookup: Map<string, ExamCard>) => {
@@ -23,9 +27,20 @@ const getConflictDescription = (conflict: Conflict, examLookup: Map<string, Exam
     .filter(Boolean)
     .join(", ");
 
-  return conflict.type === "room"
-    ? `Aynı derslik birden fazla kart tarafından kullanılıyor: ${names}`
-    : `Ortak öğrenci kitlesi çakışıyor ve paralel istisnası yok: ${names}`;
+  switch (conflict.type) {
+    case "room":
+      return `Derslik ${conflict.resourceKey} birden fazla sınav tarafından kullanılıyor: ${names}`;
+    case "class":
+      return `${conflict.resourceKey} öğrenci kitlesi çakışıyor: ${names}`;
+    case "instructor":
+      return `${conflict.resourceKey} aynı anda birden fazla sınava atanmış: ${names}`;
+    case "capacity":
+      return `${conflict.resourceKey} — ${names}`;
+    case "duration-overlap":
+      return `${conflict.resourceKey}: ${names}`;
+    default:
+      return names;
+  }
 };
 
 export const ConflictList = ({
@@ -53,7 +68,12 @@ export const ConflictList = ({
               className="conflict-list__button"
               onClick={() => onSelectCard(conflict.cardIds[0])}
             >
-              <strong>{getConflictTitle(conflict)}</strong>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <span className={`conflict-list__type-badge conflict-list__type-badge--${conflict.type}`}>
+                  {CONFLICT_TYPE_LABELS[conflict.type]}
+                </span>
+                <strong>{getConflictTitle(conflict)}</strong>
+              </div>
               <span>{getConflictDescription(conflict, examLookup)}</span>
             </button>
           </li>

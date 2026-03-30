@@ -9,6 +9,7 @@ interface UnassignedPanelProps {
   selectedCardId: string | null;
   conflictedCardIds: Set<string>;
   onSelectCard: (cardId: string) => void;
+  onCardContextMenu?: (examId: string, x: number, y: number) => void;
 }
 
 export const UnassignedPanel = ({
@@ -16,6 +17,7 @@ export const UnassignedPanel = ({
   selectedCardId,
   conflictedCardIds,
   onSelectCard,
+  onCardContextMenu,
 }: UnassignedPanelProps) => {
   const { isOver, setNodeRef } = useDroppable({
     id: UNASSIGNED_SLOT_KEY,
@@ -60,6 +62,7 @@ export const UnassignedPanel = ({
                       conflicted={conflictedCardIds.has(exam.id)}
                       compactClassLabel
                       onSelect={onSelectCard}
+                      onContextMenu={onCardContextMenu}
                     />
                   ))}
                 </div>

@@ -1,5 +1,6 @@
 import * as XLSX from "xlsx";
 import {
+  DEFAULT_EXAM_DURATION,
   UNASSIGNED_SLOT_KEY,
   createBlankExam,
   createSlotKey,
@@ -12,6 +13,8 @@ import {
   parseProgramsInput,
   splitRooms,
 } from "./schedule";
+import { parseCoursesWithAI } from "./ai-parser";
+import type { SheetData } from "./ai-parser";
 import { normalizeSchoolProfile } from "./profiles";
 import { parseWorkbookArrayBuffer } from "./xlsx-parser";
 import type {
@@ -21,12 +24,10 @@ import type {
   SchoolProfile,
 } from "../types/schedule";
 
-type GenericSheet = {
-  name: string;
-  rows: string[][];
-};
+// SheetData ile aynı yapı; ai-parser'dan alınıyor
+type GenericSheet = SheetData;
 
-type CourseSeed = {
+export type CourseSeed = {
   programs: string[];
   classYear: string;
   courseName: string;
@@ -34,15 +35,29 @@ type CourseSeed = {
   locationText: string | null;
 };
 
+/** Mevcut sınav kartlarından CourseSeed listesi çıkarır (yeniden oluşturma için). */
+export const extractCourseSeeds = (exams: ExamCard[]): CourseSeed[] =>
+  exams.map((exam) => ({
+    programs: exam.programs,
+    classYear: exam.classYear,
+    courseName: exam.courseName,
+    instructorText: exam.instructorText ?? null,
+    locationText: exam.locationText ?? null,
+  }));
+
 type ImportOptions = {
   profile?: SchoolProfile | null;
   fallbackTemplate?: Pick<ScheduleDocument["template"], "dates" | "times"> | null;
+  /** AI destekli ayrıştırma etkin mi? (profilde API key varsa kullanılır) */
+  useAI?: boolean;
 };
 
 type ImportedScheduleResult = {
   document: ScheduleDocument;
   mode: "exam-workbook" | "auto-generated";
   message: string;
+  /** AI kullanıldıysa sonuç bilgisi */
+  aiStatus?: { used: boolean; seedCount: number; error: string | null; provider?: string };
 };
 
 const DEFAULT_DATES = ["1. Gün", "2. Gün", "3. Gün", "4. Gün", "5. Gün"];
@@ -176,15 +191,40 @@ const detectHeaderMap = (row: string[]) => {
   return Object.fromEntries(entries) as Partial<Record<keyof CourseSeed, number>>;
 };
 
+/**
+ * Satırın tümünü birleştirerek sınıf yılı içeren bir BÖLÜM BAŞLIĞI mı diye kontrol eder.
+ * Sadece gerçek başlık satırlarında döner; normal ders satırlarında boş string döner.
+ * Başlık heuristic: az sayıda hücre, ders kodu/hoca unvanı/saat içermiyor, sınıf kalıbı var.
+ */
+const inferSectionClassYear = (cells: string[]): string => {
+  // Çok fazla hücre varsa muhtemelen ders satırı
+  if (cells.length > 6) return "";
+  // Saat veya hoca unvanı içeriyorsa ders satırı
+  const joined = cells.join(" ");
+  if (/\d{1,2}:\d{2}/.test(joined)) return "";
+  if (/\b(prof|doç|doc|dr\.|öğr|ogr|arş|ars)\b/i.test(joined)) return "";
+  return inferClassYear(joined);
+};
+
 const extractSeedsFromRows = (rows: string[][], classHint?: string | null) => {
   const courseSeeds: CourseSeed[] = [];
   let headerMap: Partial<Record<keyof CourseSeed, number>> | null = null;
+  // Belge içindeki bölüm başlıklarından güncellenen dinamik sınıf yılı
+  let currentClassHint: string = normalizeClassYear(classHint ?? "");
 
   for (const row of rows) {
     const cleaned = row.map((cell) => cell.trim()).filter(Boolean);
 
     if (cleaned.length === 0) {
       continue;
+    }
+
+    // Bölüm başlığı tespiti: satır birleştirildiğinde sınıf yılı içeriyor mu?
+    // Örn: ["1.", "SINIF", "HAFTALIK", "DERS", "PROGRAMI"] → "1.S"
+    const sectionYear = inferSectionClassYear(cleaned);
+    if (sectionYear) {
+      currentClassHint = sectionYear;
+      continue; // Bu satır bir başlık, ders değil
     }
 
     const maybeHeader = detectHeaderMap(cleaned);
@@ -208,7 +248,7 @@ const extractSeedsFromRows = (rows: string[][], classHint?: string | null) => {
             : [],
         classYear:
           (typeof headerMap.classYear === "number" ? inferClassYear(cleaned[headerMap.classYear] ?? "") : "") ||
-          normalizeClassYear(classHint ?? ""),
+          currentClassHint,
         courseName,
         instructorText:
           typeof headerMap.instructorText === "number"
@@ -222,7 +262,7 @@ const extractSeedsFromRows = (rows: string[][], classHint?: string | null) => {
       continue;
     }
 
-    const fallbackSeed = inferCourseSeedFromCells(cleaned, classHint);
+    const fallbackSeed = inferCourseSeedFromCells(cleaned, currentClassHint);
 
     if (fallbackSeed) {
       courseSeeds.push(fallbackSeed);
@@ -387,53 +427,202 @@ const resolveTemplate = (
   };
 };
 
+/** Get date portion from a slot key */
+const getDateFromSlot = (slotKey: string): string => {
+  const sepIndex = slotKey.indexOf("__@@__");
+  return sepIndex >= 0 ? slotKey.slice(0, sepIndex) : slotKey;
+};
+
+/** Get time portion from a slot key and convert to minutes since midnight */
+const getSlotTimeMinutes = (slotKey: string): number | null => {
+  const sepIndex = slotKey.indexOf("__@@__");
+  if (sepIndex < 0) return null;
+  const time = slotKey.slice(sepIndex + 6);
+  const match = /^(\d{1,2}):(\d{2})/.exec(time);
+  if (!match) return null;
+  return Number(match[1]) * 60 + Number(match[2]);
+};
+
+/** Detect if course is English (prefer Friday) */
+const isEnglishCourse = (courseName: string): boolean =>
+  /\b(ingilizce|english|eng\.?\s|ınglızce)\b/i.test(courseName);
+
+/** Detect if course is a second foreign language (prefer Thursday) */
+const isSecondForeignLanguage = (courseName: string): boolean =>
+  /\b(ikinci\s+yabanc[ıi]\s+dil|2\.\s*yabanc[ıi]|fransızca|almanca|rusça|rusca|ispanyolca|japonca|çince|cince|italyanca|arapça|arapca|farsça|farsca|korece|portekizce)\b/i.test(
+    courseName,
+  );
+
+/** Minimum gap between two exams for the same class year (minutes) */
+const MIN_SAME_CLASS_GAP_MINUTES = 120;
+
+/**
+ * Smart slot selection with fitness scoring.
+ * Considers: class conflicts, room conflicts, instructor conflicts,
+ * 2-hour minimum gap for same class year on same day,
+ * day distribution (spread same class year across different days),
+ * language day preferences (English→Friday, 2nd foreign→Thursday),
+ * and load balancing.
+ */
+/**
+ * Saat havuzu — çakışma çözülemediğinde dinamik olarak eklenir.
+ * Türk üniversitelerinde yaygın sınav saatleri, en makul sıralamayla.
+ */
+const TIME_EXPANSION_POOL = [
+  "09:00", "11:00", "13:00", "15:00",
+  "10:00", "12:00", "14:00", "16:00",
+  "08:00", "17:00", "18:00",
+];
+
 const selectSlotForExam = (
   slots: string[],
   examsBySlot: Map<string, ExamCard[]>,
   courseSeed: CourseSeed,
+  defaultDuration: number = DEFAULT_EXAM_DURATION,
+  /** true → çakışmasız slot yoksa null döner (yeni saat eklenmesi için sinyal) */
+  strictMode: boolean = false,
 ) => {
   const normalizedClassYear = normalizeClassYear(courseSeed.classYear);
   const normalizedPrograms = normalizePrograms(courseSeed.programs);
   const requestedRooms = splitRooms(courseSeed.locationText ?? "");
+  const instructorLower = courseSeed.instructorText?.trim().toLocaleLowerCase("tr") ?? null;
 
+  // Build a map: date → list of {startMin, endMin} for existing same-class exams
+  const classYearDayCounts = new Map<string, number>();
+  const classYearDayIntervals = new Map<string, Array<{ startMin: number; endMin: number }>>();
+
+  for (const [slotKey, slotExams] of examsBySlot) {
+    const date = getDateFromSlot(slotKey);
+    for (const exam of slotExams) {
+      if (normalizedClassYear && normalizeClassYear(exam.classYear) === normalizedClassYear) {
+        const key = `${normalizedClassYear}::${date}`;
+        classYearDayCounts.set(key, (classYearDayCounts.get(key) ?? 0) + 1);
+
+        const startMin = getSlotTimeMinutes(slotKey);
+        if (startMin !== null) {
+          const endMin = startMin + (exam.durationMinutes ?? defaultDuration);
+          const intervals = classYearDayIntervals.get(key) ?? [];
+          intervals.push({ startMin, endMin });
+          classYearDayIntervals.set(key, intervals);
+        }
+      }
+    }
+  }
+
+  /** Check if placing an exam at candidateStart with given duration violates the 2-hour gap rule */
+  const violatesGapRule = (date: string, candidateStart: number): boolean => {
+    if (!normalizedClassYear) return false;
+    const key = `${normalizedClassYear}::${date}`;
+    const intervals = classYearDayIntervals.get(key);
+    if (!intervals) return false;
+    const candidateEnd = candidateStart + defaultDuration;
+    for (const { startMin, endMin } of intervals) {
+      // Gap between candidate end and existing start must be >= 120, OR
+      // gap between existing end and candidate start must be >= 120
+      if (candidateEnd > startMin - MIN_SAME_CLASS_GAP_MINUTES && startMin > candidateStart) {
+        return true; // candidate ends too close before existing
+      }
+      if (endMin > candidateStart - MIN_SAME_CLASS_GAP_MINUTES && candidateStart > startMin) {
+        return true; // existing ends too close before candidate
+      }
+      // Overlapping ranges (same start or complete overlap)
+      if (candidateStart < endMin && startMin < candidateEnd) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  // Determine language-based day preference
+  const courseNameLower = courseSeed.courseName.toLocaleLowerCase("tr");
+  const preferFriday = isEnglishCourse(courseNameLower);
+  const preferThursday = isSecondForeignLanguage(courseNameLower);
+
+  // Filter hard constraints
   const candidates = slots.filter((slotKey) => {
     const slotExams = examsBySlot.get(slotKey) ?? [];
-    const classConflict =
+
+    // Hard constraint: no class/audience overlap
+    if (
       normalizedClassYear &&
       slotExams.some((exam) =>
         doAudiencesOverlap(
-          {
-            classYear: normalizedClassYear,
-            programs: normalizedPrograms,
-          },
+          { classYear: normalizedClassYear, programs: normalizedPrograms },
           exam,
         ),
-      );
-
-    if (classConflict) {
+      )
+    ) {
       return false;
     }
 
-    if (requestedRooms.length === 0) {
-      return true;
+    // Hard constraint: no room conflicts
+    if (requestedRooms.length > 0) {
+      const occupiedRooms = new Set(slotExams.flatMap((exam) => exam.rooms));
+      if (requestedRooms.some((room) => occupiedRooms.has(room))) {
+        return false;
+      }
     }
 
-    const occupiedRooms = new Set(slotExams.flatMap((exam) => exam.rooms));
-    return requestedRooms.every((room) => !occupiedRooms.has(room));
-  });
-
-  const rankedSlots = (candidates.length > 0 ? candidates : slots).sort((left, right) => {
-    const leftCount = examsBySlot.get(left)?.length ?? 0;
-    const rightCount = examsBySlot.get(right)?.length ?? 0;
-
-    if (leftCount !== rightCount) {
-      return leftCount - rightCount;
+    // Hard constraint: no instructor conflicts
+    if (instructorLower) {
+      const instructorConflict = slotExams.some(
+        (exam) => exam.instructorText?.trim().toLocaleLowerCase("tr") === instructorLower,
+      );
+      if (instructorConflict) {
+        return false;
+      }
     }
 
-    return slots.indexOf(left) - slots.indexOf(right);
+    // Hard constraint: same class year must have 2-hour gap between exams on same day
+    if (normalizedClassYear) {
+      const date = getDateFromSlot(slotKey);
+      const startMin = getSlotTimeMinutes(slotKey);
+      if (startMin !== null && violatesGapRule(date, startMin)) {
+        return false;
+      }
+    }
+
+    return true;
   });
 
-  return rankedSlots[0] ?? null;
+  // Score each candidate slot
+  const scoredSlots = (candidates.length > 0 ? candidates : slots).map((slotKey) => {
+    let score = 100; // base score
+    const slotExams = examsBySlot.get(slotKey) ?? [];
+    const date = getDateFromSlot(slotKey).toLocaleLowerCase("tr");
+
+    // Prefer less loaded slots (load balancing)
+    score -= slotExams.length * 10;
+
+    // Prefer days with fewer exams for the same class year (day distribution)
+    if (normalizedClassYear) {
+      const dayCount = classYearDayCounts.get(`${normalizedClassYear}::${getDateFromSlot(slotKey)}`) ?? 0;
+      score -= dayCount * 15; // heavily penalize same-day exams for same class
+    }
+
+    // Language day preferences
+    if (preferFriday && (date.includes("cuma") || date.includes("fri"))) {
+      score += 50;
+    }
+    if (preferThursday && (date.includes("perşembe") || date.includes("persembe") || date.includes("thu"))) {
+      score += 50;
+    }
+
+    // Small bonus for earlier slots (maintain order)
+    score -= slots.indexOf(slotKey) * 0.1;
+
+    return { slotKey, score };
+  });
+
+  // Strict modda çakışmasız slot yoksa null döndür → çağıran yeni saat ekler
+  if (strictMode && candidates.length === 0) {
+    return null;
+  }
+
+  // Sort by score (highest first)
+  scoredSlots.sort((a, b) => b.score - a.score);
+
+  return scoredSlots[0]?.slotKey ?? null;
 };
 
 export const buildAutoScheduleDocument = (
@@ -443,52 +632,77 @@ export const buildAutoScheduleDocument = (
 ) => {
   const profile = options.profile ? normalizeSchoolProfile(options.profile) : null;
   const template = resolveTemplate(profile, options.fallbackTemplate);
-  const slots = template.dates.flatMap((date) => template.times.map((time) => createSlotKey(date, time)));
+
+  // Değiştirilebilir saat listesi — çakışma çözülemeyince yeni saat eklenir
+  const mutableTimes: string[] = [...template.times];
+  let slots = template.dates.flatMap((date) => mutableTimes.map((time) => createSlotKey(date, time)));
+
+  /**
+   * Havuzdan henüz kullanılmayan bir sonraki saati ekler.
+   * Yeni eklenen slotları mevcut listeye dahil eder.
+   * @returns Yeni saat eklendiyse true, havuz doluysa false.
+   */
+  const expandTimeSlots = (): boolean => {
+    const nextTime = TIME_EXPANSION_POOL.find((t) => !mutableTimes.includes(t));
+    if (!nextTime) return false;
+    mutableTimes.push(nextTime);
+    mutableTimes.sort((a, b) => a.localeCompare(b));
+    const newSlots = template.dates.map((date) => createSlotKey(date, nextTime));
+    slots = [...slots, ...newSlots];
+    return true;
+  };
+
   const examsBySlot = new Map<string, ExamCard[]>();
-  const exams = uniqueCourseSeeds(courseSeeds)
-    .sort((left, right) => {
-      const classDelta = normalizeClassYear(left.classYear).localeCompare(
-        normalizeClassYear(right.classYear),
-        "tr",
-      );
+  const sortedSeeds = uniqueCourseSeeds(courseSeeds).sort((left, right) => {
+    const classDelta = normalizeClassYear(left.classYear).localeCompare(
+      normalizeClassYear(right.classYear),
+      "tr",
+    );
+    if (classDelta !== 0) return classDelta;
+    const programDelta = formatPrograms(left.programs).localeCompare(formatPrograms(right.programs), "tr");
+    if (programDelta !== 0) return programDelta;
+    return left.courseName.localeCompare(right.courseName, "tr");
+  });
 
-      if (classDelta !== 0) {
-        return classDelta;
+  const exams = sortedSeeds.map((courseSeed) => {
+    const defaultDuration = profile?.defaultExamDuration ?? DEFAULT_EXAM_DURATION;
+
+    // Önce strict modda dene: çakışmasız slot var mı?
+    let slotKey = selectSlotForExam(slots, examsBySlot, courseSeed, defaultDuration, true);
+
+    // Çakışmasız slot bulunamadıysa yeni saat ekleyerek tekrar dene
+    while (slotKey === null) {
+      if (!expandTimeSlots()) {
+        // Havuz bitti — çakışmalı da olsa en iyi slota yerleştir
+        slotKey = selectSlotForExam(slots, examsBySlot, courseSeed, defaultDuration, false);
+        break;
       }
+      slotKey = selectSlotForExam(slots, examsBySlot, courseSeed, defaultDuration, true);
+    }
 
-      const programDelta = formatPrograms(left.programs).localeCompare(formatPrograms(right.programs), "tr");
+    const exam: ExamCard = {
+      ...createBlankExam(slotKey ?? UNASSIGNED_SLOT_KEY, courseSeed.classYear, courseSeed.programs, defaultDuration),
+      programs: normalizePrograms(courseSeed.programs),
+      courseName: courseSeed.courseName,
+      classYear: courseSeed.classYear,
+      slotKey: slotKey ?? UNASSIGNED_SLOT_KEY,
+      locationText: courseSeed.locationText ?? "Belirlenecek",
+      rooms: splitRooms(courseSeed.locationText ?? ""),
+      instructorText: courseSeed.instructorText ?? null,
+    };
 
-      if (programDelta !== 0) {
-        return programDelta;
+    if (slotKey) {
+      const existing = examsBySlot.get(slotKey);
+      if (existing) {
+        existing.push(exam);
+      } else {
+        examsBySlot.set(slotKey, [exam]);
       }
+    }
 
-      return left.courseName.localeCompare(right.courseName, "tr");
-    })
-    .map((courseSeed) => {
-      const slotKey = selectSlotForExam(slots, examsBySlot, courseSeed);
-      const exam = {
-        ...createBlankExam(slotKey ?? UNASSIGNED_SLOT_KEY, courseSeed.classYear, courseSeed.programs),
-        programs: normalizePrograms(courseSeed.programs),
-        courseName: courseSeed.courseName,
-        classYear: courseSeed.classYear,
-        slotKey: slotKey ?? UNASSIGNED_SLOT_KEY,
-        locationText: courseSeed.locationText ?? "Belirlenecek",
-        rooms: splitRooms(courseSeed.locationText ?? ""),
-        instructorText: courseSeed.instructorText ?? null,
-      };
+    return exam;
+  });
 
-      if (slotKey) {
-        const existing = examsBySlot.get(slotKey);
-
-        if (existing) {
-          existing.push(exam);
-        } else {
-          examsBySlot.set(slotKey, [exam]);
-        }
-      }
-
-      return exam;
-    });
   const classYears = [
     ...new Set([
       ...exams.map((exam) => normalizeClassYear(exam.classYear)),
@@ -499,7 +713,7 @@ export const buildAutoScheduleDocument = (
   return normalizeDocument({
     template: {
       dates: template.dates,
-      times: template.times,
+      times: mutableTimes, // Genişletilmiş saat listesini kullan
       views: createViews(classYears),
     },
     exams,
@@ -566,6 +780,56 @@ const extractRawTextFromPdf = async (arrayBuffer: ArrayBuffer) => {
   return pages.join("\n");
 };
 
+/**
+ * AI destekli ders çıkarma.
+ *
+ * API key varsa → AI birincil parser.
+ *   Excel: yapılandırılmış tablo formatı + ham metin gönderilir.
+ *   PDF/Word: ham metin gönderilir.
+ *   AI başarısız → rule-based'e düş, hatayı raporla.
+ * API key yoksa → sadece rule-based.
+ */
+const resolveCourseSeedsWithAI = async (
+  rawText: string,
+  genericSheets: GenericSheet[],
+  options: ImportOptions,
+): Promise<{ seeds: CourseSeed[]; aiStatus: { used: boolean; seedCount: number; error: string | null; provider?: string } }> => {
+  const profile = options.profile ? normalizeSchoolProfile(options.profile) : null;
+  const apiKey = profile?.geminiApiKey?.trim();
+
+  if (options.useAI && apiKey) {
+    // AI'a hem yapılandırılmış Excel tablosunu hem ham metni gönder
+    const aiResult = await parseCoursesWithAI(apiKey, genericSheets, rawText);
+
+    if (aiResult.seeds.length > 0) {
+      const providerLabel = aiResult.provider === "groq" ? "Groq" : "Gemini";
+      const merged = mergeWithProfile(aiResult.seeds, profile);
+      return {
+        seeds: merged,
+        aiStatus: { used: true, seedCount: aiResult.seeds.length, error: null, provider: providerLabel },
+      };
+    }
+
+    // AI sonuç üretemedi — rule-based'e düş, hatayı bildir
+    const ruleBasedSeeds = resolveSeedsFromSource({ profile, rawText, genericSheets });
+    return {
+      seeds: ruleBasedSeeds,
+      aiStatus: {
+        used: false,
+        seedCount: 0,
+        error: aiResult.error ?? "AI ders programını analiz edemedi.",
+      },
+    };
+  }
+
+  // AI devre dışı veya API key yok — sadece rule-based
+  const ruleBasedSeeds = resolveSeedsFromSource({ profile, rawText, genericSheets });
+  return {
+    seeds: ruleBasedSeeds,
+    aiStatus: { used: false, seedCount: 0, error: null },
+  };
+};
+
 export const importScheduleFromFile = async (
   file: File,
   options: ImportOptions = {},
@@ -591,20 +855,20 @@ export const importScheduleFromFile = async (
     } catch {
       const genericSheets = extractGenericSheetsFromWorkbook(arrayBuffer);
       const rawText = extractRawTextFromWorkbook(genericSheets);
-      const courseSeeds = resolveSeedsFromSource({
-        profile: options.profile ? normalizeSchoolProfile(options.profile) : null,
-        rawText,
-        genericSheets,
-      });
+      const { seeds: courseSeeds, aiStatus } = await resolveCourseSeedsWithAI(rawText, genericSheets, options);
 
       if (courseSeeds.length === 0) {
         throw new Error("Excel dosyasından ders listesi çıkarılamadı. Profil derslerini kontrol edin.");
       }
 
+      const aiNote = aiStatus.used
+        ? ` ✓ ${aiStatus.provider ?? "AI"} ile ${aiStatus.seedCount} ders tanındı.`
+        : "";
       return {
         document: buildAutoScheduleDocument(courseSeeds, file.name, options),
         mode: "auto-generated",
-        message: `${file.name} ders programından otomatik sınav taslağı üretildi.`,
+        message: `${file.name} ders programından otomatik sınav taslağı üretildi.${aiNote}`,
+        aiStatus,
       };
     }
   }
@@ -615,39 +879,39 @@ export const importScheduleFromFile = async (
 
   if (/\.docx$/i.test(lowerName)) {
     const rawText = await extractRawTextFromDocx(arrayBuffer);
-    const courseSeeds = resolveSeedsFromSource({
-      profile: options.profile ? normalizeSchoolProfile(options.profile) : null,
-      rawText,
-      genericSheets: [],
-    });
+    const { seeds: courseSeeds, aiStatus } = await resolveCourseSeedsWithAI(rawText, [], options);
 
     if (courseSeeds.length === 0) {
       throw new Error("Word dosyasından ders listesi çıkarılamadı. Profil derslerini kontrol edin.");
     }
 
+    const aiNote = aiStatus.used
+      ? ` ✓ ${aiStatus.provider ?? "AI"} ile ${aiStatus.seedCount} ders tanındı.`
+      : "";
     return {
       document: buildAutoScheduleDocument(courseSeeds, file.name, options),
       mode: "auto-generated",
-      message: `${file.name} Word içeriğinden otomatik sınav taslağı üretildi.`,
+      message: `${file.name} Word içeriğinden otomatik sınav taslağı üretildi.${aiNote}`,
+      aiStatus,
     };
   }
 
   if (/\.pdf$/i.test(lowerName)) {
     const rawText = await extractRawTextFromPdf(arrayBuffer);
-    const courseSeeds = resolveSeedsFromSource({
-      profile: options.profile ? normalizeSchoolProfile(options.profile) : null,
-      rawText,
-      genericSheets: [],
-    });
+    const { seeds: courseSeeds, aiStatus } = await resolveCourseSeedsWithAI(rawText, [], options);
 
     if (courseSeeds.length === 0) {
       throw new Error("PDF dosyasından ders listesi çıkarılamadı. Profil derslerini kontrol edin.");
     }
 
+    const aiNote = aiStatus.used
+      ? ` ✓ ${aiStatus.provider ?? "AI"} ile ${aiStatus.seedCount} ders tanındı.`
+      : "";
     return {
       document: buildAutoScheduleDocument(courseSeeds, file.name, options),
       mode: "auto-generated",
-      message: `${file.name} PDF içeriğinden otomatik sınav taslağı üretildi.`,
+      message: `${file.name} PDF içeriğinden otomatik sınav taslağı üretildi.${aiNote}`,
+      aiStatus,
     };
   }
 

@@ -13,7 +13,7 @@ describe("app shell", () => {
   it("opens the inspector when a card is selected and lets the user edit it", () => {
     useScheduleStore.getState().resetForTests(loadFixtureDocument());
 
-    const { container } = render(<AppShell sampleUrl={null} bootstrapFromStorage={false} />);
+    const { container } = render(<AppShell bootstrapFromStorage={false} />);
 
     const archaeologyCard = container.querySelector('[data-course-name="Arkeoloji"]') as HTMLButtonElement;
     fireEvent.click(archaeologyCard);
@@ -53,7 +53,7 @@ describe("app shell", () => {
   it("adds new cards to the unassigned pool and can undo the last move", () => {
     useScheduleStore.getState().resetForTests(loadFixtureDocument());
 
-    const { container } = render(<AppShell sampleUrl={null} bootstrapFromStorage={false} />);
+    const { container } = render(<AppShell bootstrapFromStorage={false} />);
 
     fireEvent.click(
       Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Yeni kart") as HTMLButtonElement,
@@ -70,11 +70,11 @@ describe("app shell", () => {
   it("adds a new time block from the toolbar", () => {
     vi.spyOn(window, "prompt").mockReturnValue("17:00");
     useScheduleStore.getState().resetForTests(loadFixtureDocument());
-    const { container } = render(<AppShell sampleUrl={null} bootstrapFromStorage={false} />);
+    const { container } = render(<AppShell bootstrapFromStorage={false} />);
 
     fireEvent.click(
       Array.from(container.querySelectorAll("button")).find(
-        (button) => button.textContent === "Saat bloğu ekle",
+        (button) => button.textContent === "Saat ekle",
       ) as HTMLButtonElement,
     );
 
@@ -84,7 +84,7 @@ describe("app shell", () => {
 
   it("shows class schedule list in the view area and switches views from it", () => {
     useScheduleStore.getState().resetForTests(loadFixtureDocument());
-    const { container } = render(<AppShell sampleUrl={null} bootstrapFromStorage={false} />);
+    const { container } = render(<AppShell bootstrapFromStorage={false} />);
 
     const secondClassView = container.querySelector('[data-view-id="class:2.S"]') as HTMLButtonElement;
 
@@ -112,7 +112,7 @@ describe("app shell", () => {
     });
     useScheduleStore.getState().resetForTests(document);
 
-    const { container } = render(<AppShell sampleUrl={null} bootstrapFromStorage={false} />);
+    const { container } = render(<AppShell bootstrapFromStorage={false} />);
     const unofferedCell = container.querySelector('[data-slot-key="__unoffered__"]');
 
     expect(container.textContent).toContain("Açılmayan Dersler");
@@ -132,7 +132,7 @@ describe("app shell", () => {
       .mockReturnValueOnce("Taslak A")
       .mockReturnValueOnce("Taslak B");
 
-    const { container, unmount } = render(<AppShell sampleUrl={null} bootstrapFromStorage={false} />);
+    const { container, unmount } = render(<AppShell bootstrapFromStorage={false} />);
     const saveButton = Array.from(container.querySelectorAll("button")).find(
       (button) => button.textContent === "Kaydet",
     ) as HTMLButtonElement;
@@ -175,7 +175,7 @@ describe("app shell", () => {
       uiScale: "normal",
     });
 
-    render(<AppShell sampleUrl={null} bootstrapFromStorage />);
+    render(<AppShell bootstrapFromStorage />);
 
     const reopenedRecordsSelect = document.body.querySelector(
       'select[aria-label="Kayıtlar"]',
@@ -191,7 +191,7 @@ describe("app shell", () => {
   it("shows the attribution banner and lets the user save a school profile", () => {
     useScheduleStore.getState().resetForTests(null);
 
-    const { container } = render(<AppShell sampleUrl={null} bootstrapFromStorage={false} />);
+    const { container } = render(<AppShell bootstrapFromStorage={false} />);
     const currentRender = within(container);
 
     expect(
