@@ -209,29 +209,30 @@ describe("app shell", () => {
     );
     expect(screen.getAllByLabelText("X")[0]).toHaveAttribute("href", "https://x.com/AlparslanGvnc");
 
+    // Step 0: Temel bilgiler
     fireEvent.change(currentRender.getByLabelText("Profil adı"), {
       target: { value: "İletişim Fakültesi" },
     });
-    fireEvent.change(currentRender.getByLabelText("Tarihler"), {
+    fireEvent.change(currentRender.getByLabelText("Sınav tarihleri"), {
       target: { value: "Pzt 23.03.2026\nSal 24.03.2026" },
     });
     fireEvent.change(currentRender.getByLabelText("Saatler"), {
       target: { value: "09:00\n11:00" },
     });
-    fireEvent.change(currentRender.getByLabelText("Bölümler / Programlar"), {
-      target: { value: "Gazetecilik\nRadyo TV" },
-    });
-    fireEvent.change(currentRender.getByLabelText("Sınıflar"), {
-      target: { value: "1.S\n2.S" },
-    });
-    fireEvent.change(currentRender.getByLabelText("Ders şablonları"), {
-      target: {
-        value:
-          "Gazetecilik | 1.S | Arkeoloji | Dr. Ayşe Kaya | 102-103\nRadyo TV | 2.S | Medya Yönetimi | Öğr. Gör. Ali Demir | 104",
-      },
-    });
 
-    fireEvent.click(currentRender.getByText("Profili kaydet"));
+    // Navigate to Step 1: Bölümler
+    fireEvent.click(currentRender.getByText("İleri →"));
+
+    // Add programs via chip interface
+    const programInput = currentRender.getByPlaceholderText("örn. Gazetecilik");
+    fireEvent.change(programInput, { target: { value: "Gazetecilik" } });
+    fireEvent.click(currentRender.getAllByText("Ekle")[0]);
+
+    fireEvent.change(programInput, { target: { value: "Radyo TV" } });
+    fireEvent.click(currentRender.getAllByText("Ekle")[0]);
+
+    // Save profile (button is always visible)
+    fireEvent.click(currentRender.getByText("Profili Kaydet"));
 
     expect(useScheduleStore.getState().profiles).toHaveLength(1);
     expect(useScheduleStore.getState().profiles[0]?.name).toBe("İletişim Fakültesi");
