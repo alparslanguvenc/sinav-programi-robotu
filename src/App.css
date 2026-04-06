@@ -144,20 +144,93 @@
 }
 
 .toolbar__controls {
-  display: grid;
-  grid-template-columns:
-    minmax(220px, 1.15fr)
-    minmax(140px, 200px)
-    minmax(140px, 200px)
-    minmax(110px, 160px)
-    minmax(0, 1fr);
-  gap: 10px;
-  align-items: end;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
-.toolbar__view-block {
-  display: grid;
+/* ── Satır 1: Görünüm pill'leri ── */
+.toolbar__view-row {
+  display: flex;
+  align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
+}
+
+.toolbar__view-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.toolbar__view-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.toolbar__view-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 120ms ease, background 120ms ease, color 120ms ease;
+}
+
+.toolbar__view-chip:hover {
+  border-color: var(--accent-light);
+  background: var(--accent-bg);
+}
+
+.toolbar__view-chip--active {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+
+.toolbar__view-chip-count {
+  font-size: 0.72em;
+  font-weight: 700;
+  color: var(--muted);
+  background: var(--surface-raised);
+  border-radius: 10px;
+  padding: 0 5px;
+  min-width: 18px;
+  text-align: center;
+}
+
+.toolbar__view-chip--active .toolbar__view-chip-count {
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  color: var(--accent);
+}
+
+/* ── Satır 2: Seçiciler + aksiyonlar ── */
+.toolbar__bottom-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.toolbar__selects {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  flex: 1;
+  min-width: 0;
 }
 
 .toolbar__select {
@@ -168,48 +241,37 @@
   color: var(--ink-light);
 }
 
-.toolbar__view-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
-  gap: 6px;
-}
-
-.toolbar__view-chip {
-  display: grid;
-  gap: 3px;
-  min-height: 50px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 7px 9px;
-  background: var(--surface);
-  color: var(--ink);
-  text-align: left;
-  font: inherit;
-  cursor: pointer;
-  transition: transform 140ms ease, border-color 140ms ease, box-shadow 140ms ease, background 140ms ease;
-}
-
-.toolbar__view-chip:hover {
-  transform: translateY(-1px);
-  border-color: var(--accent-light);
-  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.08);
-}
-
-.toolbar__view-chip--active {
-  border-color: var(--accent);
-  background: var(--accent-bg);
-  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.1);
-}
-
-.toolbar__view-chip-label {
-  font-weight: 700;
-  font-size: 0.9em;
-}
-
-.toolbar__view-chip-meta {
+/* Satır içi kompakt select (label + select yan yana) */
+.toolbar__select--inline {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.78rem;
+  font-weight: 600;
   color: var(--muted);
-  font-size: 0.72em;
-  line-height: 1.25;
+  white-space: nowrap;
+}
+
+.toolbar__select--inline select {
+  min-height: 28px !important;
+  padding: 3px 6px !important;
+  font-size: 0.82rem;
+  border-radius: 6px;
+  min-width: 90px;
+  max-width: 160px;
+}
+
+/* +/× kompakt butonlar */
+.toolbar__inline-btn {
+  height: 28px;
+  width: 28px;
+  padding: 0 !important;
+  font-size: 1rem;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
 }
 
 .toolbar__select select,
@@ -242,7 +304,14 @@
 .inspector__actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
+  align-items: center;
+}
+
+.toolbar__actions .button {
+  min-height: 30px;
+  font-size: 0.82rem;
+  padding: 0 10px;
 }
 
 /* Buttons */
@@ -835,22 +904,8 @@
 }
 
 /* Responsive */
-@media (max-width: 1320px) {
-  .toolbar__controls {
-    grid-template-columns: minmax(0, 1fr) repeat(3, minmax(140px, 1fr));
-  }
-
-  .toolbar__actions {
-    grid-column: 1 / -1;
-  }
-}
-
 @media (max-width: 1180px) {
   .workspace {
-    grid-template-columns: 1fr;
-  }
-
-  .toolbar__controls {
     grid-template-columns: 1fr;
   }
 }
@@ -867,8 +922,9 @@
     border-radius: 12px;
   }
 
-  .toolbar__controls {
-    grid-template-columns: 1fr;
+  .toolbar__bottom-row {
+    flex-direction: column;
+    align-items: flex-start;
   }
 
   .button {

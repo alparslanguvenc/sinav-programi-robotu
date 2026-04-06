@@ -125,18 +125,9 @@ export const Toolbar = ({
     </div>
 
     <div className="toolbar__controls">
-      <div className="toolbar__view-block">
-        <label className="toolbar__select">
-          Görünüm
-          <select value={activeViewId} onChange={(event) => onViewChange(event.target.value)}>
-            {viewSummaries.map((view) => (
-              <option key={view.id} value={view.id}>
-                {view.id.startsWith("program:") ? `[Bölüm] ${view.label}` : view.label}
-              </option>
-            ))}
-          </select>
-        </label>
-
+      {/* ── Satır 1: Görünüm pill'leri ── */}
+      <div className="toolbar__view-row">
+        <span className="toolbar__view-label">Görünüm</span>
         <div className="toolbar__view-list" aria-label="Sınıf sınav programları">
           {viewSummaries.map((view) => (
             <button
@@ -147,114 +138,72 @@ export const Toolbar = ({
                 "toolbar__view-chip--active": view.id === activeViewId,
               })}
               onClick={() => onViewChange(view.id)}
+              title={`${view.label} · ${view.examCount} sınav`}
             >
-              <span className="toolbar__view-chip-label">{view.label}</span>
-              <span className="toolbar__view-chip-meta">
-                {view.classYear
-                  ? `${view.examCount} sınav`
-                  : view.id.startsWith("program:")
-                    ? `Bölüm · ${view.examCount}`
-                    : `Tümü · ${view.examCount}`}
-              </span>
+              {view.label}
+              <span className="toolbar__view-chip-count">{view.examCount}</span>
             </button>
           ))}
         </div>
       </div>
 
-      <div className="toolbar__record-block">
-        <label className="toolbar__select" style={{ flex: 1, minWidth: 0 }}>
-          Kayıtlar
-          <select
-            aria-label="Kayıtlar"
-            value={activeSavedRecordId ?? ""}
-            onChange={(event) => {
-              if (event.target.value) {
-                onSavedRecordChange(event.target.value);
-              }
-            }}
-          >
-            <option value="">— Geçici çalışma —</option>
-            {savedRecordSummaries.map((record) => (
-              <option key={record.id} value={record.id}>
-                {record.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <div className="toolbar__record-actions">
-          <button
-            type="button"
-            className="button button--ghost"
-            title="Yeni boş program oluştur"
-            onClick={onNewDocument}
-          >
-            + Yeni
-          </button>
-          {activeSavedRecordId ? (
-            <button
-              type="button"
-              className="button button--danger-ghost"
-              title="Bu kaydı sil"
-              onClick={() => onDeleteSavedRecord(activeSavedRecordId)}
-            >
-              Sil
-            </button>
-          ) : null}
+      {/* ── Satır 2: Seçiciler + aksiyonlar ── */}
+      <div className="toolbar__bottom-row">
+        <div className="toolbar__selects">
+          <div className="toolbar__record-block">
+            <label className="toolbar__select toolbar__select--inline">
+              <span>Kayıt</span>
+              <select
+                aria-label="Kayıtlar"
+                value={activeSavedRecordId ?? ""}
+                onChange={(event) => { if (event.target.value) onSavedRecordChange(event.target.value); }}
+              >
+                <option value="">— Geçici —</option>
+                {savedRecordSummaries.map((record) => (
+                  <option key={record.id} value={record.id}>{record.name}</option>
+                ))}
+              </select>
+            </label>
+            <button type="button" className="button button--ghost toolbar__inline-btn" title="Yeni boş program" onClick={onNewDocument}>+</button>
+            {activeSavedRecordId && (
+              <button type="button" className="button button--danger-ghost toolbar__inline-btn" title="Kaydı sil" onClick={() => onDeleteSavedRecord(activeSavedRecordId)}>×</button>
+            )}
+          </div>
+
+          <label className="toolbar__select toolbar__select--inline">
+            <span>Profil</span>
+            <select aria-label="Okul profili" value={activeProfileId ?? ""} onChange={(e) => onProfileChange(e.target.value || null)}>
+              <option value="">— Profil yok —</option>
+              {profileSummaries.map((p) => (
+                <option key={p.id} value={p.id}>{p.name} ({p.courseCount})</option>
+              ))}
+            </select>
+          </label>
+
+          {programOptions.length > 0 && (
+            <div className="toolbar__record-block">
+              <label className="toolbar__select toolbar__select--inline">
+                <span>Bölüm</span>
+                <select aria-label="Bölüm filtresi" value={activeProgramFilter ?? ""} onChange={(e) => onProgramFilterChange(e.target.value || null)}>
+                  <option value="">Tümü</option>
+                  {programOptions.map((p) => <option key={p} value={p}>{p}</option>)}
+                </select>
+              </label>
+              <button type="button" className="button button--ghost toolbar__inline-btn" title="Bölüm ekle" onClick={onAddProgram}>+</button>
+            </div>
+          )}
+
+          <label className="toolbar__select toolbar__select--inline">
+            <span>Boyut</span>
+            <select value={uiScale} onChange={(e) => onUiScaleChange(e.target.value as UiScale)}>
+              <option value="small">K</option>
+              <option value="normal">N</option>
+              <option value="large">B</option>
+            </select>
+          </label>
         </div>
-      </div>
 
-      <label className="toolbar__select">
-        Okul profili
-        <select
-          aria-label="Okul profili"
-          value={activeProfileId ?? ""}
-          onChange={(event) => onProfileChange(event.target.value || null)}
-        >
-          <option value="">Profil seçilmedi</option>
-          {profileSummaries.map((profile) => (
-            <option key={profile.id} value={profile.id}>
-              {profile.name} ({profile.courseCount})
-            </option>
-          ))}
-        </select>
-      </label>
-
-      <div className="toolbar__program-block">
-        <label className="toolbar__select" style={{ flex: 1, minWidth: 0 }}>
-          Bölüm filtresi
-          <select
-            aria-label="Bölüm filtresi"
-            value={activeProgramFilter ?? ""}
-            onChange={(event) => onProgramFilterChange(event.target.value || null)}
-          >
-            <option value="">Tüm bölümler</option>
-            {programOptions.map((program) => (
-              <option key={program} value={program}>
-                {program}
-              </option>
-            ))}
-          </select>
-        </label>
-        <button
-          type="button"
-          className="button button--ghost toolbar__add-program-btn"
-          title="Aktif profile yeni bölüm ekle"
-          onClick={onAddProgram}
-        >
-          + Bölüm
-        </button>
-      </div>
-
-      <label className="toolbar__select">
-        Boyut
-        <select value={uiScale} onChange={(event) => onUiScaleChange(event.target.value as UiScale)}>
-          <option value="small">Küçük</option>
-          <option value="normal">Normal</option>
-          <option value="large">Büyük</option>
-        </select>
-      </label>
-
-      <div className="toolbar__actions">
+        <div className="toolbar__actions">
         {/* Dosya grubu */}
         <button type="button" className="button button--ghost" onClick={onOpenSource}>
           Dosya yükle
@@ -313,7 +262,8 @@ export const Toolbar = ({
           Çakışmalar ({visibleConflictCount}) {conflictsOpen ? "▲" : "▼"}
         </button>
       </div>
-    </div>
+      </div>{/* toolbar__bottom-row */}
+    </div>{/* toolbar__controls */}
 
     {/* AI prompt satırı */}
     <div className={clsx("toolbar__prompt-row", { "toolbar__prompt-row--open": promptOpen || userPrompt.trim() })}>
