@@ -83,6 +83,30 @@
   background: var(--surface-raised);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06);
   backdrop-filter: blur(20px);
+  transition: padding 0.2s ease, gap 0.2s ease;
+}
+
+/* Compact mode — scroll aşağı inince brand gizlenir, toolbar sıkışır */
+.toolbar--compact {
+  padding: 6px 16px;
+  gap: 6px;
+}
+
+.toolbar__brand {
+  overflow: hidden;
+  max-height: 80px;
+  transition: max-height 0.25s ease, opacity 0.2s ease, margin 0.2s ease;
+  opacity: 1;
+}
+
+.toolbar--compact .toolbar__brand {
+  max-height: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.toolbar--compact .toolbar__controls {
+  gap: 6px;
 }
 
 .toolbar__brand h1,
@@ -1338,5 +1362,67 @@
   flex: 1;
   min-width: 100px;
   font-size: 0.82rem;
+  white-space: nowrap;
+}
+
+/* ── Toolbar AI prompt satırı ─────────────────────────── */
+.toolbar__prompt-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+
+.toolbar--compact .toolbar__prompt-row {
+  padding-top: 4px;
+}
+
+.toolbar__prompt-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--muted);
+  padding: 0;
+  transition: color 0.15s;
+}
+
+.toolbar__prompt-toggle:hover {
+  color: var(--accent);
+}
+
+.toolbar__prompt-toggle--active {
+  color: var(--accent);
+}
+
+.toolbar__prompt-chevron {
+  font-size: 0.7em;
+  opacity: 0.7;
+}
+
+.toolbar__prompt-body {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.toolbar__prompt-input {
+  flex: 1;
+  min-width: 0;
+  resize: vertical;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  min-height: 44px;
+}
+
+.toolbar__prompt-clear {
+  flex-shrink: 0;
+  font-size: 0.78rem;
+  padding: 5px 10px;
   white-space: nowrap;
 }

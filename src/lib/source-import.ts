@@ -50,6 +50,8 @@ type ImportOptions = {
   fallbackTemplate?: Pick<ScheduleDocument["template"], "dates" | "times"> | null;
   /** AI destekli ayrıştırma etkin mi? (profilde API key varsa kullanılır) */
   useAI?: boolean;
+  /** Kullanıcının AI'ya iletmek istediği ek talimatlar */
+  userInstructions?: string;
 };
 
 type ImportedScheduleResult = {
@@ -799,7 +801,7 @@ const resolveCourseSeedsWithAI = async (
 
   if (options.useAI && apiKey) {
     // AI'a hem yapılandırılmış Excel tablosunu hem ham metni gönder
-    const aiResult = await parseCoursesWithAI(apiKey, genericSheets, rawText);
+    const aiResult = await parseCoursesWithAI(apiKey, genericSheets, rawText, options.userInstructions);
 
     if (aiResult.seeds.length > 0) {
       const providerLabel = aiResult.provider === "groq" ? "Groq" : "Gemini";

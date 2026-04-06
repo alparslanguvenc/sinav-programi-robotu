@@ -1,4 +1,5 @@
 import clsx from "clsx";
+import { useEffect, useRef, useState } from "react";
 import type { ScheduleView, UiScale } from "../types/schedule";
 
 interface ViewSummary extends ScheduleView {
@@ -53,6 +54,8 @@ interface ToolbarProps {
   onRegenerate: () => void;
   onUiScaleChange: (uiScale: UiScale) => void;
   onToggleAI: () => void;
+  userPrompt: string;
+  onUserPromptChange: (value: string) => void;
 }
 
 export const Toolbar = ({
@@ -91,8 +94,21 @@ export const Toolbar = ({
   onRegenerate,
   onUiScaleChange,
   onToggleAI,
-}: ToolbarProps) => (
-  <header className="toolbar">
+  userPrompt,
+  onUserPromptChange,
+}: ToolbarProps) => {
+  const headerRef = useRef<HTMLElement>(null);
+  const [compact, setCompact] = useState(false);
+  const [promptOpen, setPromptOpen] = useState(false);
+
+  useEffect(() => {
+    const onScroll = () => setCompact(window.scrollY > 55);
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+
+  return (
+  <header ref={headerRef} className={clsx("toolbar", { "toolbar--compact": compact })}>
     <div className="toolbar__brand">
       <p className="toolbar__eyebrow">Üniversite Sınav Planlama Aracı</p>
       <h1>Sınav Programı Robotu</h1>
@@ -299,6 +315,41 @@ export const Toolbar = ({
       </div>
     </div>
 
+    {/* AI prompt satırı */}
+    <div className={clsx("toolbar__prompt-row", { "toolbar__prompt-row--open": promptOpen || userPrompt.trim() })}>
+      <button
+        type="button"
+        className={clsx("toolbar__prompt-toggle", { "toolbar__prompt-toggle--active": userPrompt.trim() })}
+        onClick={() => setPromptOpen((o) => !o)}
+        title="Yapay zekaya ek talimat ekle"
+      >
+        {userPrompt.trim() ? "✦ AI talimatı var" : "✦ AI'ya talimat ver"}
+        <span className="toolbar__prompt-chevron">{promptOpen ? "▲" : "▼"}</span>
+      </button>
+
+      {(promptOpen || userPrompt.trim()) && (
+        <div className="toolbar__prompt-body">
+          <textarea
+            className="toolbar__prompt-input"
+            value={userPrompt}
+            rows={2}
+            placeholder="örn. Fizik sınavı Cuma olmasın · 1. ve 2. sınıf aynı güne denk gelmesin · Dr. Kaya'nın sınavları Çarşamba sabah..."
+            onChange={(e) => onUserPromptChange(e.target.value)}
+          />
+          {userPrompt.trim() && (
+            <button
+              type="button"
+              className="button button--ghost toolbar__prompt-clear"
+              onClick={() => { onUserPromptChange(""); setPromptOpen(false); }}
+            >
+              Temizle
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+
     {busy ? <div className="toolbar__busy">Dosya işleniyor...</div> : null}
   </header>
-);
+  );
+};

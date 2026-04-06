@@ -73,7 +73,7 @@ const GEMINI_MODELS = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash"]
 
 // ─── Sistem prompt ───────────────────────────────────────────────────────────
 
-const buildPrompt = (structuredContent: string): string =>
+const buildPrompt = (structuredContent: string, userInstructions?: string): string =>
   `Sen bir üniversite ders programı ayrıştırma uzmanısın.
 
 Sana bir üniversitenin ders programı belgesi verildi. Her üniversitenin formatı farklıdır.
@@ -186,7 +186,11 @@ Sadece geçerli JSON dizisi döndür. Başka metin, açıklama, kod bloğu EKLEM
 
 ━━━ DERS PROGRAMI BELGESİ ━━━
 
-${structuredContent}`;
+${structuredContent}${
+  userInstructions?.trim()
+    ? `\n\n━━━ KULLANICININ EK TALİMATLARI ━━━\n\n${userInstructions.trim()}\n\nBu talimatlara ders çıkarma sürecinde dikkat et.`
+    : ""
+}`;
 
 // ─── Excel → yapılandırılmış tablo ──────────────────────────────────────────
 
@@ -473,6 +477,7 @@ export const parseCoursesWithAI = async (
   apiKey: string,
   sheets: SheetData[],
   rawText: string,
+  userInstructions?: string,
 ): Promise<{ seeds: CourseSeed[]; error: string | null; provider: Provider }> => {
   const key = apiKey.trim();
 
@@ -492,7 +497,7 @@ export const parseCoursesWithAI = async (
     return { seeds: [], error: "Dosya içeriği çok kısa, analiz edilemedi.", provider };
   }
 
-  const prompt = buildPrompt(truncate(content));
+  const prompt = buildPrompt(truncate(content), userInstructions);
 
   try {
     const responseText =

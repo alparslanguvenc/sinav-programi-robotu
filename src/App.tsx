@@ -112,6 +112,7 @@ export function AppShell({
   const [activeDraggedExam, setActiveDraggedExam] = useState<ExamCard | null>(null);
   const [fileDragActive, setFileDragActive] = useState(false);
   const [useAI, setUseAI] = useState(true);
+  const [userPrompt, setUserPrompt] = useState("");
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const sensors = useSensors(
     useSensor(MouseSensor, {
@@ -347,6 +348,7 @@ export function AppShell({
         profile: activeProfile,
         fallbackTemplate: document?.template ?? null,
         useAI,
+        userInstructions: userPrompt.trim() || undefined,
       });
 
       // AI denendi ama başarısız olduysa uyarı ver, kural tabanlı ile devam et
@@ -560,7 +562,7 @@ export function AppShell({
     const regenerated = buildAutoScheduleDocument(
       seeds,
       document.sourceMeta.sourceFileName ?? "program",
-      { profile: activeProfile, fallbackTemplate: document.template },
+      { profile: activeProfile, fallbackTemplate: document.template, userInstructions: userPrompt.trim() || undefined },
     );
     startTransition(() => loadDocument(regenerated));
     setStatus({ tone: "info", message: "Program çakışmasız olarak yeniden oluşturuldu." });
@@ -693,6 +695,8 @@ export function AppShell({
         onRegenerate={handleRegenerate}
         onUiScaleChange={setUiScale}
         onToggleAI={() => setUseAI((prev) => !prev)}
+        userPrompt={userPrompt}
+        onUserPromptChange={setUserPrompt}
       />
 
       {status ? (
