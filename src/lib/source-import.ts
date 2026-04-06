@@ -35,6 +35,123 @@ export type CourseSeed = {
   locationText: string | null;
 };
 
+// ─── Kullanıcı talimatı ayrıştırıcısı ──────────────────────────────────────
+
+/**
+ * Türkçe doğal dil talimatını yapılandırılmış kısıtlara dönüştürür.
+ * Her satır/cümle bağımsız olarak değerlendirilir.
+ *
+ * Desteklenen kalıplar:
+ *  "Fizik Cuma olmasın"         → Fizik içeren dersler Cuma'dan kaçınsın
+ *  "Dr. Kaya Salı olsun"        → Dr. Kaya'nın dersleri Salı'yı tercih etsin
+ *  "1. sınıf Pazartesi olmasın" → 1.S sınıfı Pazartesi'den kaçınsın
+ *  "Matematik Çarşamba"          → Matematik Çarşamba'yı tercih etsin (belirsiz → prefer)
+ */
+type UserConstraint = {
+  /** Hangi gün? (Türkçe lowercase, slotta aranacak) */
+  dayToken: string;
+  /** Pozitif = tercih et, negatif = kaçın */
+  weight: number;
+  /** Bu kısıt hangi derse/hocaya/sınıfa uygulanır? (boşsa herkese) */
+  subjectTokens: string[];
+};
+
+const DAY_TOKENS: Record<string, string[]> = {
+  pazartesi: ["pazartesi", "pzt", "monday", "mon"],
+  salı:      ["salı", "sali", "sal", "tuesday", "tue"],
+  çarşamba:  ["çarşamba", "carsamba", "çar", "car", "wednesday", "wed"],
+  perşembe:  ["perşembe", "persembe", "per", "thursday", "thu"],
+  cuma:      ["cuma", "cum", "friday", "fri"],
+};
+
+const AVOID_TOKENS = ["olmasın", "olmasin", "koyma", "denk gelmesin", "yapma", "olmamalı", "olmamali", "yasak", "engel"];
+const PREFER_TOKENS = ["olsun", "yap", "koy", "tercih", "önce", "once", "öncelik", "planla", "yerleştir", "yerlesdir"];
+
+export const parseUserConstraints = (instructions: string): UserConstraint[] => {
+  if (!instructions.trim()) return [];
+
+  const constraints: UserConstraint[] = [];
+  // Cümle/satır ayırıcılar: nokta, yeni satır, ·, •, noktalı virgül
+  const lines = instructions.split(/[.\n·•;]+/).map((s) => s.trim()).filter(Boolean);
+
+  for (const line of lines) {
+    const lower = line.toLocaleLowerCase("tr");
+
+    // Hangi gün?
+    let matchedDay: string | null = null;
+    for (const [canonical, variants] of Object.entries(DAY_TOKENS)) {
+      if (variants.some((v) => lower.includes(v))) {
+        matchedDay = canonical;
+        break;
+      }
+    }
+    if (!matchedDay) continue;
+
+    // Kaçın mı tercih et mi?
+    const isAvoid  = AVOID_TOKENS.some((t) => lower.includes(t));
+    const isPrefer = PREFER_TOKENS.some((t) => lower.includes(t));
+    // Hiçbiri yoksa belirsiz → hafif tercih olarak yorumla
+    const weight = isAvoid ? -180 : 60;
+    if (!isAvoid && !isPrefer && !lower.match(/\w/)) continue;
+
+    // Konu: günü ve fiil kelimelerini çıkar, geri kalan kelimeleri özne say
+    const stopWords = new Set([
+      ...Object.values(DAY_TOKENS).flat(),
+      ...AVOID_TOKENS.flatMap((t) => t.split(" ")),
+      ...PREFER_TOKENS.flatMap((t) => t.split(" ")),
+      "ve", "ile", "de", "da", "bir", "sınav", "sinav", "ders", "aynı", "ayni", "gün", "gun",
+      "sınıf", "sinif", "dersi", "sınavı", "sinavı",
+    ]);
+
+    const subjectTokens = lower
+      .split(/[\s,]+/)
+      .map((w) => w.replace(/[^a-züşğıöçÜŞĞIÖÇ]/gi, ""))
+      .filter((w) => w.length >= 2 && !stopWords.has(w));
+
+    constraints.push({ dayToken: matchedDay, weight, subjectTokens });
+  }
+
+  return constraints;
+};
+
+/** Bir CourseSeed için kısıt ağırlığını hesaplar (o slot'un tarihi ile birlikte) */
+const applyUserConstraints = (
+  constraints: UserConstraint[],
+  slotDate: string,
+  courseSeed: CourseSeed,
+): number => {
+  if (constraints.length === 0) return 0;
+
+  const dateLower = slotDate.toLocaleLowerCase("tr");
+  const courseLC  = courseSeed.courseName.toLocaleLowerCase("tr");
+  const instrLC   = (courseSeed.instructorText ?? "").toLocaleLowerCase("tr");
+  const yearLC    = normalizeClassYear(courseSeed.classYear).toLocaleLowerCase("tr");
+
+  let totalScore = 0;
+
+  for (const c of constraints) {
+    // Bu kısıt bu güne uygulanıyor mu?
+    const dayVariants = DAY_TOKENS[c.dayToken] ?? [c.dayToken];
+    const dayMatches  = dayVariants.some((v) => dateLower.includes(v));
+    if (!dayMatches) continue;
+
+    // Konu belirtilmemişse herkese uygula
+    if (c.subjectTokens.length === 0) {
+      totalScore += c.weight;
+      continue;
+    }
+
+    // En az bir konu token'ı eşleşiyor mu?
+    const entityStr = `${courseLC} ${instrLC} ${yearLC}`;
+    const matches = c.subjectTokens.some((token) => entityStr.includes(token));
+    if (matches) {
+      totalScore += c.weight;
+    }
+  }
+
+  return totalScore;
+};
+
 /** Mevcut sınav kartlarından CourseSeed listesi çıkarır (yeniden oluşturma için). */
 export const extractCourseSeeds = (exams: ExamCard[]): CourseSeed[] =>
   exams.map((exam) => ({
@@ -483,6 +600,8 @@ const selectSlotForExam = (
   defaultDuration: number = DEFAULT_EXAM_DURATION,
   /** true → çakışmasız slot yoksa null döner (yeni saat eklenmesi için sinyal) */
   strictMode: boolean = false,
+  /** Kullanıcı talimatından türetilmiş kısıtlar */
+  userConstraints: UserConstraint[] = [],
 ) => {
   const normalizedClassYear = normalizeClassYear(courseSeed.classYear);
   const normalizedPrograms = normalizePrograms(courseSeed.programs);
@@ -610,6 +729,9 @@ const selectSlotForExam = (
       score += 50;
     }
 
+    // Kullanıcı talimat kısıtları
+    score += applyUserConstraints(userConstraints, getDateFromSlot(slotKey), courseSeed);
+
     // Small bonus for earlier slots (maintain order)
     score -= slots.indexOf(slotKey) * 0.1;
 
@@ -634,6 +756,9 @@ export const buildAutoScheduleDocument = (
 ) => {
   const profile = options.profile ? normalizeSchoolProfile(options.profile) : null;
   const template = resolveTemplate(profile, options.fallbackTemplate);
+
+  // Kullanıcı talimatını yapılandırılmış kısıtlara dönüştür
+  const userConstraints = parseUserConstraints(options.userInstructions ?? "");
 
   // Değiştirilebilir saat listesi — çakışma çözülemeyince yeni saat eklenir
   const mutableTimes: string[] = [...template.times];
@@ -670,16 +795,16 @@ export const buildAutoScheduleDocument = (
     const defaultDuration = profile?.defaultExamDuration ?? DEFAULT_EXAM_DURATION;
 
     // Önce strict modda dene: çakışmasız slot var mı?
-    let slotKey = selectSlotForExam(slots, examsBySlot, courseSeed, defaultDuration, true);
+    let slotKey = selectSlotForExam(slots, examsBySlot, courseSeed, defaultDuration, true, userConstraints);
 
     // Çakışmasız slot bulunamadıysa yeni saat ekleyerek tekrar dene
     while (slotKey === null) {
       if (!expandTimeSlots()) {
         // Havuz bitti — çakışmalı da olsa en iyi slota yerleştir
-        slotKey = selectSlotForExam(slots, examsBySlot, courseSeed, defaultDuration, false);
+        slotKey = selectSlotForExam(slots, examsBySlot, courseSeed, defaultDuration, false, userConstraints);
         break;
       }
-      slotKey = selectSlotForExam(slots, examsBySlot, courseSeed, defaultDuration, true);
+      slotKey = selectSlotForExam(slots, examsBySlot, courseSeed, defaultDuration, true, userConstraints);
     }
 
     const exam: ExamCard = {
