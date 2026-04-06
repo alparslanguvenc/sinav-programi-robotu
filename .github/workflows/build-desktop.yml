@@ -18,10 +18,12 @@ jobs:
             label: macOS DMG
             script: package:mac
             artifact_name: sinav-programi-robotu-macos
+            glob: "release/*.dmg"
           - os: windows-latest
             label: Windows EXE
             script: package:win
             artifact_name: sinav-programi-robotu-windows
+            glob: "release/*.exe"
 
     steps:
       - name: Checkout
@@ -46,7 +48,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
-          path: release/**
+          path: ${{ matrix.glob }}
           if-no-files-found: error
 
   release:
@@ -62,9 +64,22 @@ jobs:
         with:
           path: artifacts
 
-      - name: Publish draft release
+      - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          draft: true
+          draft: false
+          prerelease: false
           generate_release_notes: true
-          files: artifacts/**/*
+          name: "Sınav Programı Robotu ${{ github.ref_name }}"
+          body: |
+            ## Kurulum
+
+            | Platform | İndir |
+            |---|---|
+            | **macOS** | `.dmg` dosyasını indir → aç → uygulamayı Applications klasörüne sürükle |
+            | **Windows** | `.exe` dosyasını indir → çalıştır → kurulum sihirbazını takip et |
+
+            > API anahtarı almak için: [console.groq.com](https://console.groq.com) (ücretsiz)
+          files: |
+            artifacts/**/*.dmg
+            artifacts/**/*.exe

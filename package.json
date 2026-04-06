@@ -1,7 +1,7 @@
 {
   "name": "sinav-programi-robotu",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Sürükle-bırak sınav programı düzenleme ve otomatik planlama aracı",
   "author": "Alparslan Güvenç",
   "main": "electron/main.cjs",
