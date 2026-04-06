@@ -38,24 +38,34 @@ export type CourseSeed = {
 // ─── Kullanıcı talimatı ayrıştırıcısı ──────────────────────────────────────
 
 /**
- * Türkçe doğal dil talimatını yapılandırılmış kısıtlara dönüştürür.
- * Her satır/cümle bağımsız olarak değerlendirilir.
- *
- * Desteklenen kalıplar:
- *  "Fizik Cuma olmasın"         → Fizik içeren dersler Cuma'dan kaçınsın
- *  "Dr. Kaya Salı olsun"        → Dr. Kaya'nın dersleri Salı'yı tercih etsin
- *  "1. sınıf Pazartesi olmasın" → 1.S sınıfı Pazartesi'den kaçınsın
- *  "Matematik Çarşamba"          → Matematik Çarşamba'yı tercih etsin (belirsiz → prefer)
+ * Slot key'den tarih ve saat parçalarını ayırır.
+ * Format: "Pzt 14.05.2026__@@__09:00"
  */
-type UserConstraint = {
-  /** Hangi gün? (Türkçe lowercase, slotta aranacak) */
-  dayToken: string;
-  /** Pozitif = tercih et, negatif = kaçın */
-  weight: number;
-  /** Bu kısıt hangi derse/hocaya/sınıfa uygulanır? (boşsa herkese) */
-  subjectTokens: string[];
+const splitSlotKey = (slotKey: string): { date: string; time: string } => {
+  const [date = "", time = ""] = slotKey.split("__@@__");
+  return { date, time };
 };
 
+/**
+ * "DD.MM.YYYY" → Date nesnesi. Geçersizse null.
+ */
+const parseTrDate = (str: string): Date | null => {
+  const m = str.match(/(\d{1,2})\.(\d{2})\.(\d{4})/);
+  if (!m) return null;
+  const d = new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]));
+  return isNaN(d.getTime()) ? null : d;
+};
+
+/**
+ * Slot tarih string'inden (ör. "Pzt 14.05.2026" veya "14.05.2026") Date çıkarır.
+ */
+const parseDateFromSlotDate = (slotDate: string): Date | null => {
+  const m = slotDate.match(/(\d{1,2})\.(\d{2})\.(\d{4})/);
+  if (!m) return null;
+  return parseTrDate(m[0]);
+};
+
+/** Haftanın gün adı eşleştirme tablosu */
 const DAY_TOKENS: Record<string, string[]> = {
   pazartesi: ["pazartesi", "pzt", "monday", "mon"],
   salı:      ["salı", "sali", "sal", "tuesday", "tue"],
@@ -64,88 +74,186 @@ const DAY_TOKENS: Record<string, string[]> = {
   cuma:      ["cuma", "cum", "friday", "fri"],
 };
 
-const AVOID_TOKENS = ["olmasın", "olmasin", "koyma", "denk gelmesin", "yapma", "olmamalı", "olmamali", "yasak", "engel"];
-const PREFER_TOKENS = ["olsun", "yap", "koy", "tercih", "önce", "once", "öncelik", "planla", "yerleştir", "yerlesdir"];
+const AVOID_RE    = /\b(olmasın|olmasin|koyma|koymayın|denk gelmesin|yapma|olmamalı|olmamali|yasak|kaçın|katma|ekleme)\b/i;
+const DEADLINE_RE = /\b(kadar|bitirilsin|tamamlansın|tamamlansin)\b/i;
 
+/** Konu dışı (stop) kelimeler */
+const STOP_WORDS = new Set([
+  ...Object.values(DAY_TOKENS).flat(),
+  "ve", "ile", "de", "da", "bir", "bu", "tüm", "tum", "bütün", "butun",
+  "sınav", "sinav", "ders", "dersi", "dersleri", "sınavı", "sinavı", "sınavları", "sinavlari",
+  "aynı", "ayni", "gün", "gun", "günü", "gunu", "tarih", "tarihinde", "tarihine",
+  "sınıf", "sinif", "sınıfın", "sinifin", "sınıfların", "siniflarin",
+  "saati", "saatine", "saatlerine", "saat", "genel", "olarak",
+  "kadar", "önce", "once", "bitirilsin", "tamamlansın", "tamamlansin",
+  "olsun", "olmasın", "olmasin", "koyma", "yap", "planla",
+]);
+
+/**
+ * "3. sınıf", "3.s", "üçüncü" → normalize edilmiş sınıf yılı token'ı ("3.s")
+ */
+const CLASS_YEAR_WORD: Record<string, string> = {
+  birinci: "1.s", "1.sinif": "1.s", "1.sınıf": "1.s",
+  ikinci:  "2.s", "2.sinif": "2.s", "2.sınıf": "2.s",
+  üçüncü: "3.s", "3.sinif": "3.s", "3.sınıf": "3.s",
+  dördüncü:"4.s", "4.sinif": "4.s", "4.sınıf": "4.s",
+  beşinci: "5.s", "5.sinif": "5.s", "5.sınıf": "5.s",
+};
+
+const normalizeSubjectToken = (w: string): string => CLASS_YEAR_WORD[w] ?? w;
+
+/** Kısıt tipi */
+type UserConstraint =
+  | { kind: "pin-date";    dateStr: string;   weight: number; subjects: string[] }
+  | { kind: "avoid-time";  timeStr: string;   weight: number; subjects: string[] }
+  | { kind: "deadline";    before: Date;      weight: number; subjects: string[] }
+  | { kind: "day-score";   dayKey: string;    weight: number; subjects: string[] };
+
+/**
+ * Türkçe doğal dil talimatını yapılandırılmış kısıtlara dönüştürür.
+ *
+ * Desteklenen kalıplar:
+ *  "Almanca 14.05.2026 tarihinde olsun"  → o tarihe yönlendir
+ *  "08:00 saatlerine sınav koyma"        → o saati atla
+ *  "4. sınıf 15.05.2026 tarihine kadar" → o tarihten sonraki slotları cezalandır
+ *  "Fizik Cuma olmasın"                  → Cuma'dan kaçın
+ *  "Dr. Kaya Salı olsun"                 → Salı'yı tercih et
+ */
 export const parseUserConstraints = (instructions: string): UserConstraint[] => {
   if (!instructions.trim()) return [];
 
   const constraints: UserConstraint[] = [];
-  // Cümle/satır ayırıcılar: nokta, yeni satır, ·, •, noktalı virgül
-  const lines = instructions.split(/[.\n·•;]+/).map((s) => s.trim()).filter(Boolean);
+  // Nokta, yeni satır, ·, •, noktalı virgül ile böl — ama "14.05" gibi tarihleri bozma
+  const lines = instructions
+    .split(/(?<!\d)\.(?!\d{2}\.\d{4})|\n|[·•;]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
 
   for (const line of lines) {
     const lower = line.toLocaleLowerCase("tr");
 
-    // Hangi gün?
-    let matchedDay: string | null = null;
-    for (const [canonical, variants] of Object.entries(DAY_TOKENS)) {
+    const isAvoid    = AVOID_RE.test(lower);
+    const isDeadline = DEADLINE_RE.test(lower) && !isAvoid;
+
+    // ── 1. Belirli tarih kısıtları (DD.MM.YYYY) ──────────────────────────
+    const dateMatches = [...lower.matchAll(/(\d{1,2}\.\d{2}\.\d{4})/g)];
+    if (dateMatches.length > 0) {
+      const subjects = extractSubjects(lower);
+
+      for (const dm of dateMatches) {
+        const dateStr = dm[1];
+        const parsedDate = parseTrDate(dateStr);
+        if (!parsedDate) continue;
+
+        if (isDeadline && !isAvoid) {
+          // "tarihine kadar tamamlansın" → o tarihten sonraki slotları cezalandır
+          constraints.push({ kind: "deadline", before: parsedDate, weight: -300, subjects });
+        } else {
+          // "tarihinde olsun" → o tarihe yönlendir (+250), diğer tarihlerden kaçın (-60)
+          const weight = isAvoid ? -250 : 250;
+          constraints.push({ kind: "pin-date", dateStr, weight, subjects });
+        }
+      }
+      // Aynı satırda saat de olabilir, devam et
+    }
+
+    // ── 2. Belirli saat kısıtları (HH:MM) ────────────────────────────────
+    const timeMatches = [...lower.matchAll(/(\d{1,2}:\d{2})/g)];
+    if (timeMatches.length > 0) {
+      const subjects = extractSubjects(lower);
+      const weight = isAvoid ? -300 : 80;
+      for (const tm of timeMatches) {
+        constraints.push({ kind: "avoid-time", timeStr: tm[1], weight, subjects });
+      }
+    }
+
+    // Tarih veya saat kısıtı bulduysa haftanın günü aramaya gerek yok
+    if (dateMatches.length > 0 || timeMatches.length > 0) continue;
+
+    // ── 3. Haftanın günü kısıtları ────────────────────────────────────────
+    for (const [dayKey, variants] of Object.entries(DAY_TOKENS)) {
       if (variants.some((v) => lower.includes(v))) {
-        matchedDay = canonical;
+        const weight = isAvoid ? -200 : 70;
+        const subjects = extractSubjects(lower);
+        constraints.push({ kind: "day-score", dayKey, weight, subjects });
         break;
       }
     }
-    if (!matchedDay) continue;
-
-    // Kaçın mı tercih et mi?
-    const isAvoid  = AVOID_TOKENS.some((t) => lower.includes(t));
-    const isPrefer = PREFER_TOKENS.some((t) => lower.includes(t));
-    // Hiçbiri yoksa belirsiz → hafif tercih olarak yorumla
-    const weight = isAvoid ? -180 : 60;
-    if (!isAvoid && !isPrefer && !lower.match(/\w/)) continue;
-
-    // Konu: günü ve fiil kelimelerini çıkar, geri kalan kelimeleri özne say
-    const stopWords = new Set([
-      ...Object.values(DAY_TOKENS).flat(),
-      ...AVOID_TOKENS.flatMap((t) => t.split(" ")),
-      ...PREFER_TOKENS.flatMap((t) => t.split(" ")),
-      "ve", "ile", "de", "da", "bir", "sınav", "sinav", "ders", "aynı", "ayni", "gün", "gun",
-      "sınıf", "sinif", "dersi", "sınavı", "sinavı",
-    ]);
-
-    const subjectTokens = lower
-      .split(/[\s,]+/)
-      .map((w) => w.replace(/[^a-züşğıöçÜŞĞIÖÇ]/gi, ""))
-      .filter((w) => w.length >= 2 && !stopWords.has(w));
-
-    constraints.push({ dayToken: matchedDay, weight, subjectTokens });
   }
 
   return constraints;
 };
 
-/** Bir CourseSeed için kısıt ağırlığını hesaplar (o slot'un tarihi ile birlikte) */
+/** Bir satırdan özne token'larını çıkarır (tarih/saat/fiil/stop kelimeleri hariç) */
+const extractSubjects = (lower: string): string[] =>
+  lower
+    .replace(/\d{1,2}\.\d{2}\.\d{4}/g, "") // tarihleri sil
+    .replace(/\d{1,2}:\d{2}/g, "")          // saatleri sil
+    .split(/[\s,]+/)
+    .map((w) => w.replace(/[^a-züşğıöçüşğıöça-z0-9.]/gi, "").toLocaleLowerCase("tr"))
+    .filter((w) => w.length >= 2 && !STOP_WORDS.has(w))
+    .map(normalizeSubjectToken);
+
+/** Bir slot için kullanıcı kısıt skorunu hesaplar */
 const applyUserConstraints = (
   constraints: UserConstraint[],
-  slotDate: string,
+  slotKey: string,
   courseSeed: CourseSeed,
 ): number => {
   if (constraints.length === 0) return 0;
 
-  const dateLower = slotDate.toLocaleLowerCase("tr");
-  const courseLC  = courseSeed.courseName.toLocaleLowerCase("tr");
-  const instrLC   = (courseSeed.instructorText ?? "").toLocaleLowerCase("tr");
-  const yearLC    = normalizeClassYear(courseSeed.classYear).toLocaleLowerCase("tr");
+  const { date: slotDate, time: slotTime } = splitSlotKey(slotKey);
+  const dateLower  = slotDate.toLocaleLowerCase("tr");
+  const courseLC   = courseSeed.courseName.toLocaleLowerCase("tr");
+  const instrLC    = (courseSeed.instructorText ?? "").toLocaleLowerCase("tr");
+  const yearNorm   = normalizeClassYear(courseSeed.classYear).toLocaleLowerCase("tr");
+  const entityStr  = `${courseLC} ${instrLC} ${yearNorm}`;
 
   let totalScore = 0;
 
   for (const c of constraints) {
-    // Bu kısıt bu güne uygulanıyor mu?
-    const dayVariants = DAY_TOKENS[c.dayToken] ?? [c.dayToken];
-    const dayMatches  = dayVariants.some((v) => dateLower.includes(v));
-    if (!dayMatches) continue;
+    // Özne eşleşme kontrolü: boşsa herkese uygula
+    const subjectMatches =
+      c.subjects.length === 0 ||
+      c.subjects.some((token) => entityStr.includes(token));
 
-    // Konu belirtilmemişse herkese uygula
-    if (c.subjectTokens.length === 0) {
-      totalScore += c.weight;
-      continue;
-    }
+    if (!subjectMatches) continue;
 
-    // En az bir konu token'ı eşleşiyor mu?
-    const entityStr = `${courseLC} ${instrLC} ${yearLC}`;
-    const matches = c.subjectTokens.some((token) => entityStr.includes(token));
-    if (matches) {
-      totalScore += c.weight;
+    switch (c.kind) {
+      case "pin-date": {
+        // Slot tarihinde DD.MM.YYYY var mı?
+        const hits = dateLower.includes(c.dateStr);
+        if (c.weight > 0) {
+          // tercih et: eşleşirse büyük bonus, eşleşmezse küçük ceza
+          totalScore += hits ? c.weight : -60;
+        } else {
+          // kaçın: eşleşirse büyük ceza
+          if (hits) totalScore += c.weight;
+        }
+        break;
+      }
+      case "avoid-time": {
+        // Slot saati eşleşiyor mu?
+        if (slotTime.startsWith(c.timeStr) || slotTime === c.timeStr) {
+          totalScore += c.weight;
+        }
+        break;
+      }
+      case "deadline": {
+        // Slot tarihi son tarihten sonra mı?
+        const slotParsedDate = parseDateFromSlotDate(slotDate);
+        if (slotParsedDate && slotParsedDate > c.before) {
+          totalScore += c.weight;
+        }
+        break;
+      }
+      case "day-score": {
+        const dayVariants = DAY_TOKENS[c.dayKey] ?? [c.dayKey];
+        if (dayVariants.some((v) => dateLower.includes(v))) {
+          totalScore += c.weight;
+        }
+        break;
+      }
     }
   }
 
@@ -730,7 +838,7 @@ const selectSlotForExam = (
     }
 
     // Kullanıcı talimat kısıtları
-    score += applyUserConstraints(userConstraints, getDateFromSlot(slotKey), courseSeed);
+    score += applyUserConstraints(userConstraints, slotKey, courseSeed);
 
     // Small bonus for earlier slots (maintain order)
     score -= slots.indexOf(slotKey) * 0.1;
