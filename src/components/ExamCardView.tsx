@@ -1,8 +1,14 @@
 import { useDraggable } from "@dnd-kit/core";
 import { CSS } from "@dnd-kit/utilities";
 import clsx from "clsx";
-import type { PropsWithChildren } from "react";
-import { DEFAULT_EXAM_DURATION, formatClassLabel, formatLocationText, formatPrograms } from "../lib/schedule";
+import type { CSSProperties, PropsWithChildren } from "react";
+import {
+  DEFAULT_EXAM_DURATION,
+  formatClassLabel,
+  formatLocationText,
+  formatPrograms,
+  getClassYearColor,
+} from "../lib/schedule";
 import type { ExamCard } from "../types/schedule";
 
 interface ExamCardBaseProps {
@@ -23,12 +29,20 @@ const ExamCardBody = ({
 }: PropsWithChildren<ExamCardBaseProps>) => {
   const programsText = formatPrograms(exam.programs);
   const duration = exam.durationMinutes ?? DEFAULT_EXAM_DURATION;
+  const classColor = getClassYearColor(exam.classYear);
+  const classBadgeStyle = {
+    backgroundColor: classColor.background,
+    color: classColor.foreground,
+    borderColor: classColor.border,
+  } satisfies CSSProperties;
 
   return (
     <>
       <span className="exam-card__course">{exam.courseName}</span>
       {programsText ? <span className="exam-card__programs">{programsText}</span> : null}
-      <span className="exam-card__class">{formatClassLabel(exam.classYear)}</span>
+      <span className="exam-card__class exam-card__class-badge" style={classBadgeStyle}>
+        {formatClassLabel(exam.classYear)}
+      </span>
       <span className="exam-card__location">{formatLocationText(exam)}</span>
       {exam.instructorText ? (
         <span className="exam-card__instructor">{exam.instructorText}</span>

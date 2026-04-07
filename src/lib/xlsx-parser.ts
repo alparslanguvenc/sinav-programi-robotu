@@ -25,6 +25,7 @@ type GridTemplate = {
 
 const GENERAL_SHEET_NAME = "Genel";
 const NOTES_SHEET_NAME = "Notlar";
+const TABLE_VIEW_SHEET_NAME = "Tablo Görünümü";
 const TIME_HEADER = "Saat";
 
 const cellToString = (value: CellValue) => {
@@ -209,6 +210,135 @@ const readNotesRows = (sheet?: XLSX.WorkSheet) => {
   return rows;
 };
 
+const extractUniqueOrdered = (values: string[]) => [...new Set(values.filter(Boolean))];
+
+const parseTableViewSheet = (sheet?: XLSX.WorkSheet) => {
+  if (!sheet) {
+    throw new Error("Tablo görünümü sekmesi bulunamadı.");
+  }
+
+  const rows = sheetToAoA(sheet);
+  const generalTitle = cellToString(rows[0]?.[0]) || null;
+  const exams: ExamCard[] = [];
+  const dates: string[] = [];
+  const times: string[] = [];
+  const classSheetTitles: Record<string, string> = {};
+
+  let currentSectionTitle = "";
+  let currentHeaderMap: Record<string, number> | null = null;
+
+  for (const row of rows) {
+    const stringRow = row.map(cellToString);
+    const firstCell = stringRow[0] ?? "";
+    const nonEmptyCount = stringRow.filter(Boolean).length;
+
+    if (!firstCell && nonEmptyCount === 0) {
+      currentHeaderMap = null;
+      continue;
+    }
+
+    if (firstCell && nonEmptyCount === 1) {
+      currentSectionTitle = firstCell;
+      currentHeaderMap = null;
+
+      const classYear = labelToClassYear(firstCell);
+      if (classYear) {
+        classSheetTitles[normalizeClassYear(classYear)] = firstCell;
+      }
+
+      continue;
+    }
+
+    const maybeHeaderMap = {
+      programs: findColumnIndex(stringRow, "Bölüm / Program"),
+      classYear: findColumnIndex(stringRow, "Sınıf"),
+      courseName: findColumnIndex(stringRow, "Ders"),
+      date: findColumnIndex(stringRow, "Tarih"),
+      time: findColumnIndex(stringRow, "Saat"),
+      locationText: findColumnIndex(stringRow, "Derslik"),
+      instructorText: findColumnIndex(stringRow, "Hoca / Gözetmen"),
+      duration: findColumnIndex(stringRow, "Süre (dk)"),
+      studentCount: findColumnIndex(stringRow, "Öğrenci"),
+    };
+
+    if (maybeHeaderMap.classYear >= 0 && maybeHeaderMap.courseName >= 0) {
+      currentHeaderMap = maybeHeaderMap;
+      continue;
+    }
+
+    if (!currentHeaderMap) {
+      continue;
+    }
+
+    const classYear = normalizeClassYear(cellToString(row[currentHeaderMap.classYear]));
+    const courseName = cellToString(row[currentHeaderMap.courseName]);
+    const date = cellToString(row[currentHeaderMap.date]);
+    const time = cellToString(row[currentHeaderMap.time]);
+    const locationText = cellToString(row[currentHeaderMap.locationText]);
+    const instructorText = cellToString(row[currentHeaderMap.instructorText]);
+    const durationText = cellToString(row[currentHeaderMap.duration]);
+    const studentCountText = cellToString(row[currentHeaderMap.studentCount]);
+
+    if (!classYear || !courseName) {
+      continue;
+    }
+
+    const slotKey =
+      currentSectionTitle.localeCompare(UNOFFERED_SECTION_TITLE, "tr", { sensitivity: "base" }) === 0 ||
+      !date ||
+      !time
+        ? UNOFFERED_SLOT_KEY
+        : createSlotKey(date, time);
+
+    if (slotKey !== UNOFFERED_SLOT_KEY) {
+      dates.push(date);
+      times.push(time);
+    }
+
+    const rooms = splitRooms(locationText);
+    const parsedDuration = Number(durationText);
+    const parsedStudentCount = Number(studentCountText);
+
+    exams.push({
+      id: createExamId(),
+      classYear,
+      programs: parseProgramsInput(cellToString(row[currentHeaderMap.programs])),
+      courseName,
+      slotKey,
+      rooms: rooms.length > 0 ? rooms : locationText ? [locationText] : ["Belirlenecek"],
+      locationText: locationText || null,
+      instructorText: instructorText || null,
+      parallelGroupId: null,
+      notes: null,
+      durationMinutes: Number.isFinite(parsedDuration) && parsedDuration > 0 ? parsedDuration : undefined,
+      studentCount: Number.isFinite(parsedStudentCount) && parsedStudentCount > 0 ? parsedStudentCount : null,
+    });
+  }
+
+  if (exams.length === 0) {
+    throw new Error("Tablo görünümü sekmesinden sınav satırları çözümlenemedi.");
+  }
+
+  return normalizeDocument({
+    template: {
+      dates: extractUniqueOrdered(dates),
+      times: extractUniqueOrdered(times),
+      views: createViews([
+        ...new Set([
+          ...Object.keys(classSheetTitles),
+          ...exams.map((exam) => normalizeClassYear(exam.classYear)),
+        ]),
+      ]),
+    },
+    exams,
+    sourceMeta: createSourceMeta({
+      generalTitle,
+      classSheetTitles,
+      notesRows: [],
+    }),
+  });
+};
+
 const createSourceMeta = (options: {
   generalTitle: string | null;
   classSheetTitles: Record<string, string>;
@@ -277,71 +407,84 @@ const parseUnassignedSheet = (sheet?: XLSX.WorkSheet) => {
 export const parseWorkbook = (workbook: XLSX.WorkBook): ScheduleDocument => {
   const sheetNames = workbook.SheetNames;
   const generalSheet = workbook.Sheets[GENERAL_SHEET_NAME];
+  const tableViewSheet = workbook.Sheets[TABLE_VIEW_SHEET_NAME];
   const classSheetNames = sheetNames.filter((sheetName) => labelToClassYear(sheetName));
 
   if (!generalSheet && classSheetNames.length === 0) {
+    if (tableViewSheet) {
+      return parseTableViewSheet(tableViewSheet);
+    }
+
     throw new Error("Excel dosyasında desteklenen çizelge sekmesi bulunamadı.");
   }
 
-  let templateDates: string[] = [];
-  let templateTimes: string[] = [];
-  let exams: ExamCard[] = [];
-  let generalTitle: string | null = null;
-  const classSheetTitles: Record<string, string> = {};
+  try {
+    let templateDates: string[] = [];
+    let templateTimes: string[] = [];
+    let exams: ExamCard[] = [];
+    let generalTitle: string | null = null;
+    const classSheetTitles: Record<string, string> = {};
 
-  if (generalSheet) {
-    const generalGrid = parseGridSheet(generalSheet, null);
-    templateDates = generalGrid.dates;
-    templateTimes = generalGrid.times;
-    exams = generalGrid.cards;
-    generalTitle = generalGrid.title;
-  } else {
-    const firstClassSheetName = classSheetNames[0];
-    const firstClassYear = labelToClassYear(firstClassSheetName);
+    if (generalSheet) {
+      const generalGrid = parseGridSheet(generalSheet, null);
+      templateDates = generalGrid.dates;
+      templateTimes = generalGrid.times;
+      exams = generalGrid.cards;
+      generalTitle = generalGrid.title;
+    } else {
+      const firstClassSheetName = classSheetNames[0];
+      const firstClassYear = labelToClassYear(firstClassSheetName);
 
-    if (!firstClassYear) {
-      throw new Error("Sınıf sekmesi çözümlenemedi.");
+      if (!firstClassYear) {
+        throw new Error("Sınıf sekmesi çözümlenemedi.");
+      }
+
+      const firstGrid = parseGridSheet(workbook.Sheets[firstClassSheetName], firstClassYear);
+      templateDates = firstGrid.dates;
+      templateTimes = firstGrid.times;
     }
 
-    const firstGrid = parseGridSheet(workbook.Sheets[firstClassSheetName], firstClassYear);
-    templateDates = firstGrid.dates;
-    templateTimes = firstGrid.times;
+    for (const sheetName of classSheetNames) {
+      const classYear = labelToClassYear(sheetName);
+      if (!classYear) {
+        continue;
+      }
+
+      const grid = parseGridSheet(workbook.Sheets[sheetName], classYear);
+      classSheetTitles[normalizeClassYear(classYear)] = grid.title ?? sheetName;
+
+      if (!generalSheet) {
+        exams.push(...grid.cards);
+      }
+    }
+
+    exams.push(...parseUnassignedSheet(workbook.Sheets[UNASSIGNED_SHEET_NAME]));
+
+    const classYears = new Set<string>([
+      ...Object.keys(classSheetTitles),
+      ...exams.map((exam) => exam.classYear),
+    ]);
+
+    return normalizeDocument({
+      template: {
+        dates: templateDates,
+        times: templateTimes,
+        views: createViews([...classYears]),
+      },
+      exams,
+      sourceMeta: createSourceMeta({
+        generalTitle,
+        classSheetTitles,
+        notesRows: readNotesRows(workbook.Sheets[NOTES_SHEET_NAME]),
+      }),
+    });
+  } catch (error) {
+    if (tableViewSheet) {
+      return parseTableViewSheet(tableViewSheet);
+    }
+
+    throw error;
   }
-
-  for (const sheetName of classSheetNames) {
-    const classYear = labelToClassYear(sheetName);
-    if (!classYear) {
-      continue;
-    }
-
-    const grid = parseGridSheet(workbook.Sheets[sheetName], classYear);
-    classSheetTitles[normalizeClassYear(classYear)] = grid.title ?? sheetName;
-
-    if (!generalSheet) {
-      exams.push(...grid.cards);
-    }
-  }
-
-  exams.push(...parseUnassignedSheet(workbook.Sheets[UNASSIGNED_SHEET_NAME]));
-
-  const classYears = new Set<string>([
-    ...Object.keys(classSheetTitles),
-    ...exams.map((exam) => exam.classYear),
-  ]);
-
-  return normalizeDocument({
-    template: {
-      dates: templateDates,
-      times: templateTimes,
-      views: createViews([...classYears]),
-    },
-    exams,
-    sourceMeta: createSourceMeta({
-      generalTitle,
-      classSheetTitles,
-      notesRows: readNotesRows(workbook.Sheets[NOTES_SHEET_NAME]),
-    }),
-  });
 };
 
 export const parseWorkbookArrayBuffer = (arrayBuffer: ArrayBuffer) =>

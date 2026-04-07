@@ -30,7 +30,11 @@ import { Toolbar } from "./components/Toolbar";
 import { UnassignedPanel } from "./components/UnassignedPanel";
 import { downloadBlob } from "./lib/browser";
 import { createConflictIndex, detectConflicts } from "./lib/conflicts";
-import { importScheduleFromFile, buildAutoScheduleDocument, extractCourseSeeds } from "./lib/source-import";
+import {
+  buildAutoScheduleDocumentWithAI,
+  importScheduleFromFile,
+  extractCourseSeeds,
+} from "./lib/source-import";
 import {
   UI_SCALE_VALUES,
   getActiveViewClassYear,
@@ -39,7 +43,7 @@ import {
 } from "./lib/schedule";
 import { exportWorkbookArrayBuffer } from "./lib/xlsx-export";
 import { useScheduleStore } from "./store/scheduleStore";
-import type { ExamCard, ScheduleDocument } from "./types/schedule";
+import type { ExamCard, ScheduleDocument, SchoolProfile } from "./types/schedule";
 
 type StatusBanner = {
   tone: "info" | "error";
@@ -55,6 +59,15 @@ const getDocumentFileStem = (document: ScheduleDocument | null) =>
     ?.toLocaleLowerCase("tr")
     .replace(/[^\p{Letter}\p{Number}]+/gu, "-")
     .replace(/^-+|-+$/g, "") || "vize-programi";
+
+const getSuggestedRecordName = (
+  document: ScheduleDocument | null,
+  activeRecordName: string | null,
+  savedRecordCount: number,
+) =>
+  activeRecordName ??
+  document?.sourceMeta.generalTitle?.trim() ??
+  `Vize Programı ${savedRecordCount + 1}`;
 
 const filterVisibleExams = (document: ScheduleDocument, activeViewId: string) => {
   // Program-prefixed view IDs filter by program name
@@ -111,6 +124,7 @@ export function AppShell({
   const [status, setStatus] = useState<StatusBanner | null>(null);
   const [activeDraggedExam, setActiveDraggedExam] = useState<ExamCard | null>(null);
   const [fileDragActive, setFileDragActive] = useState(false);
+  const [draftProfile, setDraftProfile] = useState<SchoolProfile | null>(null);
   const [useAI, setUseAI] = useState(true);
   const [userPrompt, setUserPrompt] = useState("");
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
@@ -211,6 +225,7 @@ export function AppShell({
     () => (activeProfileId ? profiles.find((profile) => profile.id === activeProfileId) ?? null : null),
     [activeProfileId, profiles],
   );
+  const planningProfile = useMemo(() => draftProfile ?? activeProfile, [activeProfile, draftProfile]);
   const visibleConflicts = useMemo(() => {
     if (!document) {
       return [];
@@ -342,23 +357,33 @@ export function AppShell({
 
   const handleSourceUpload = async (file: File) => {
     setBusy(true);
+    const trimmedInstructions = userPrompt.trim();
+    const hasInstructions = Boolean(trimmedInstructions);
 
     try {
       const result = await importScheduleFromFile(file, {
-        profile: activeProfile,
+        profile: planningProfile,
         fallbackTemplate: document?.template ?? null,
         useAI,
-        userInstructions: userPrompt.trim() || undefined,
+        userInstructions: trimmedInstructions || undefined,
       });
+
+      let message = `${result.message}${hasInstructions ? " Talimat uygulandı." : ""}`;
+
+      if (hasInstructions && result.instructionAiStatus?.used) {
+        message += ` ✓ ${result.instructionAiStatus.provider ?? "AI"} ile talimat yorumlandı.`;
+      } else if (hasInstructions && result.instructionAiStatus?.error) {
+        message += ` ⚠️ AI talimatı yorumlayamadı (${result.instructionAiStatus.error}), kural tabanlı talimat kullanıldı.`;
+      }
 
       // AI denendi ama başarısız olduysa uyarı ver, kural tabanlı ile devam et
       if (result.aiStatus && !result.aiStatus.used && result.aiStatus.error) {
         setDocumentFromFile(
           result.document,
-          `${result.message} ⚠️ AI analiz edemedi (${result.aiStatus.error}), kural tabanlı ayrıştırma kullanıldı.`,
+          `${message} ⚠️ AI analiz edemedi (${result.aiStatus.error}), kural tabanlı ayrıştırma kullanıldı.`,
         );
       } else {
-        setDocumentFromFile(result.document, result.message);
+        setDocumentFromFile(result.document, message);
       }
     } catch (error) {
       setStatus({
@@ -440,21 +465,17 @@ export function AppShell({
       return;
     }
 
-    const suggestedName =
-      activeSavedRecord?.name ??
-      document.sourceMeta.generalTitle ??
-      `Vize Programı ${savedRecords.length + 1}`;
-    const input = window.prompt("Kaydetmek istediğiniz kayıt adını girin", suggestedName);
-
-    if (input === null || input === undefined) {
-      return;
-    }
-
-    const result = saveCurrentDocument(input);
+    const result = saveCurrentDocument(
+      getSuggestedRecordName(document, activeSavedRecord?.name ?? null, savedRecords.length),
+    );
     setStatus({
       tone: result.ok ? "info" : "error",
       message: result.message,
     });
+
+    if (result.ok) {
+      window.alert(result.message);
+    }
   };
 
   const handleSavedRecordChange = (savedRecordId: string) => {
@@ -556,16 +577,47 @@ export function AppShell({
     });
   };
 
-  const handleRegenerate = () => {
+  const handleRegenerate = async () => {
     if (!document) return;
+
+    setBusy(true);
+    const trimmedInstructions = userPrompt.trim();
     const seeds = extractCourseSeeds(document.exams);
-    const regenerated = buildAutoScheduleDocument(
-      seeds,
-      document.sourceMeta.sourceFileName ?? "program",
-      { profile: activeProfile, fallbackTemplate: document.template, userInstructions: userPrompt.trim() || undefined },
-    );
-    startTransition(() => loadDocument(regenerated));
-    setStatus({ tone: "info", message: "Program çakışmasız olarak yeniden oluşturuldu." });
+
+    try {
+      const result = await buildAutoScheduleDocumentWithAI(
+        seeds,
+        document.sourceMeta.sourceFileName ?? "program",
+        {
+          profile: planningProfile,
+          fallbackTemplate: document.template,
+          useAI,
+          userInstructions: trimmedInstructions || undefined,
+        },
+      );
+
+      startTransition(() => loadDocument(result.document));
+
+      let message = `Program çakışmasız olarak yeniden oluşturuldu.${trimmedInstructions ? " Talimat uygulandı." : ""}`;
+
+      if (trimmedInstructions && result.instructionAiStatus.used) {
+        message += ` ✓ ${result.instructionAiStatus.provider ?? "AI"} ile talimat yorumlandı.`;
+      } else if (trimmedInstructions && result.instructionAiStatus.error) {
+        message += ` ⚠️ AI talimatı yorumlayamadı (${result.instructionAiStatus.error}), kural tabanlı talimat kullanıldı.`;
+      }
+
+      setStatus({
+        tone: "info",
+        message,
+      });
+    } catch (error) {
+      setStatus({
+        tone: "error",
+        message: error instanceof Error ? error.message : "Program yeniden oluşturulamadı.",
+      });
+    } finally {
+      setBusy(false);
+    }
   };
 
   const handleProgramFilterChange = (program: string | null) => {
@@ -669,7 +721,7 @@ export function AppShell({
         canRegenerate={Boolean(document)}
         uiScale={uiScale}
         useAI={useAI}
-        hasGeminiKey={Boolean(activeProfile?.geminiApiKey?.trim())}
+        hasGeminiKey={Boolean(planningProfile?.geminiApiKey?.trim())}
         onViewChange={setActiveView}
         onOpenSource={() => sourceInputRef.current?.click()}
         onNewDocument={handleNewDocument}
@@ -803,6 +855,7 @@ export function AppShell({
               onDeleteProfile={deleteProfile}
               onLoadDocument={setDocumentFromFile}
               onStatus={(tone, message) => setStatus({ tone, message })}
+              onDraftProfileChange={setDraftProfile}
             />
           </aside>
         </main>
@@ -858,6 +911,7 @@ export function AppShell({
                 onDeleteProfile={deleteProfile}
                 onLoadDocument={setDocumentFromFile}
                 onStatus={(tone, message) => setStatus({ tone, message })}
+                onDraftProfileChange={setDraftProfile}
               />
               <ConflictList
                 conflicts={visibleConflicts}

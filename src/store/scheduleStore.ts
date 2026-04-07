@@ -66,6 +66,53 @@ interface ScheduleState {
   resetForTests: (document?: ScheduleDocument | null) => void;
 }
 
+type DesktopStateSnapshot = {
+  version?: number;
+  document?: ScheduleDocument | null;
+  savedRecords?: SavedScheduleRecord[];
+  activeSavedRecordId?: string | null;
+  profiles?: SchoolProfile[];
+  activeProfileId?: string | null;
+  uiScale?: UiScale;
+};
+
+const getDesktopStorageBridge = () =>
+  typeof window !== "undefined" ? window.sinavProgramiRobotu?.storage ?? null : null;
+
+const readDesktopStateSnapshot = (): DesktopStateSnapshot | null => {
+  const bridge = getDesktopStorageBridge();
+
+  if (!bridge?.readSync) {
+    return null;
+  }
+
+  try {
+    const snapshot = bridge.readSync();
+    return snapshot && typeof snapshot === "object" ? (snapshot as DesktopStateSnapshot) : null;
+  } catch {
+    return null;
+  }
+};
+
+const persistDesktopStatePatch = (patch: Partial<DesktopStateSnapshot>) => {
+  const bridge = getDesktopStorageBridge();
+
+  if (!bridge?.readSync || !bridge.writeSync) {
+    return;
+  }
+
+  try {
+    const current = readDesktopStateSnapshot() ?? {};
+    bridge.writeSync({
+      ...current,
+      version: 1,
+      ...patch,
+    });
+  } catch {
+    // Masaüstü dosya yedeği başarısız olsa da localStorage çalışmaya devam eder.
+  }
+};
+
 const persistDocument = (document: ScheduleDocument | null) => {
   if (typeof window === "undefined" || !window.localStorage) {
     return;
@@ -73,10 +120,12 @@ const persistDocument = (document: ScheduleDocument | null) => {
 
   if (!document) {
     window.localStorage.removeItem(STORAGE_KEY);
+    persistDesktopStatePatch({ document: null });
     return;
   }
 
   window.localStorage.setItem(STORAGE_KEY, serializeScheduleDocument(document));
+  persistDesktopStatePatch({ document });
 };
 
 const sortSavedRecords = (savedRecords: SavedScheduleRecord[]) =>
@@ -91,9 +140,27 @@ const readSavedRecords = (): SavedScheduleRecord[] => {
   }
 
   const raw = window.localStorage.getItem(SAVED_RECORDS_STORAGE_KEY);
+  const backupRecords = readDesktopStateSnapshot()?.savedRecords;
 
   if (!raw) {
-    return [];
+    return Array.isArray(backupRecords)
+      ? sortSavedRecords(
+          backupRecords
+            .filter(
+              (record) =>
+                record &&
+                typeof record.id === "string" &&
+                typeof record.name === "string" &&
+                typeof record.updatedAt === "string" &&
+                record.document,
+            )
+            .map((record) => ({
+              ...record,
+              name: record.name.trim(),
+              document: normalizeDocument(record.document),
+            })),
+        )
+      : [];
   }
 
   try {
@@ -132,6 +199,7 @@ const persistSavedRecords = (savedRecords: SavedScheduleRecord[]) => {
 
   if (savedRecords.length === 0) {
     window.localStorage.removeItem(SAVED_RECORDS_STORAGE_KEY);
+    persistDesktopStatePatch({ savedRecords: [] });
     return;
   }
 
@@ -142,6 +210,7 @@ const persistSavedRecords = (savedRecords: SavedScheduleRecord[]) => {
       records: savedRecords,
     }),
   );
+  persistDesktopStatePatch({ savedRecords });
 };
 
 const readActiveSavedRecordId = () => {
@@ -149,7 +218,7 @@ const readActiveSavedRecordId = () => {
     return null;
   }
 
-  return window.localStorage.getItem(ACTIVE_SAVED_RECORD_STORAGE_KEY);
+  return window.localStorage.getItem(ACTIVE_SAVED_RECORD_STORAGE_KEY) ?? readDesktopStateSnapshot()?.activeSavedRecordId ?? null;
 };
 
 const persistActiveSavedRecordId = (savedRecordId: string | null) => {
@@ -159,10 +228,12 @@ const persistActiveSavedRecordId = (savedRecordId: string | null) => {
 
   if (!savedRecordId) {
     window.localStorage.removeItem(ACTIVE_SAVED_RECORD_STORAGE_KEY);
+    persistDesktopStatePatch({ activeSavedRecordId: null });
     return;
   }
 
   window.localStorage.setItem(ACTIVE_SAVED_RECORD_STORAGE_KEY, savedRecordId);
+  persistDesktopStatePatch({ activeSavedRecordId: savedRecordId });
 };
 
 const readUiScale = (): UiScale => {
@@ -171,7 +242,12 @@ const readUiScale = (): UiScale => {
   }
 
   const stored = window.localStorage.getItem(UI_SCALE_STORAGE_KEY);
-  return isUiScale(stored) ? stored : "normal";
+  if (isUiScale(stored)) {
+    return stored;
+  }
+
+  const backupUiScale = readDesktopStateSnapshot()?.uiScale ?? null;
+  return isUiScale(backupUiScale) ? backupUiScale : "normal";
 };
 
 const persistUiScale = (uiScale: UiScale) => {
@@ -180,6 +256,7 @@ const persistUiScale = (uiScale: UiScale) => {
   }
 
   window.localStorage.setItem(UI_SCALE_STORAGE_KEY, uiScale);
+  persistDesktopStatePatch({ uiScale });
 };
 
 const sortProfiles = (profiles: SchoolProfile[]) =>
@@ -194,9 +271,23 @@ const readProfiles = (): SchoolProfile[] => {
   }
 
   const raw = window.localStorage.getItem(PROFILE_STORAGE_KEY);
+  const backupProfiles = readDesktopStateSnapshot()?.profiles;
 
   if (!raw) {
-    return [];
+    return Array.isArray(backupProfiles)
+      ? sortProfiles(
+          backupProfiles
+            .filter(
+              (profile) =>
+                profile &&
+                typeof profile.id === "string" &&
+                typeof profile.name === "string" &&
+                Array.isArray(profile.dates) &&
+                Array.isArray(profile.times),
+            )
+            .map((profile) => normalizeSchoolProfile(profile)),
+        )
+      : [];
   }
 
   try {
@@ -231,6 +322,7 @@ const persistProfiles = (profiles: SchoolProfile[]) => {
 
   if (profiles.length === 0) {
     window.localStorage.removeItem(PROFILE_STORAGE_KEY);
+    persistDesktopStatePatch({ profiles: [] });
     return;
   }
 
@@ -241,6 +333,7 @@ const persistProfiles = (profiles: SchoolProfile[]) => {
       profiles,
     }),
   );
+  persistDesktopStatePatch({ profiles });
 };
 
 const readActiveProfileId = () => {
@@ -248,7 +341,7 @@ const readActiveProfileId = () => {
     return null;
   }
 
-  return window.localStorage.getItem(ACTIVE_PROFILE_STORAGE_KEY);
+  return window.localStorage.getItem(ACTIVE_PROFILE_STORAGE_KEY) ?? readDesktopStateSnapshot()?.activeProfileId ?? null;
 };
 
 const persistActiveProfileId = (profileId: string | null) => {
@@ -258,10 +351,12 @@ const persistActiveProfileId = (profileId: string | null) => {
 
   if (!profileId) {
     window.localStorage.removeItem(ACTIVE_PROFILE_STORAGE_KEY);
+    persistDesktopStatePatch({ activeProfileId: null });
     return;
   }
 
   window.localStorage.setItem(ACTIVE_PROFILE_STORAGE_KEY, profileId);
+  persistDesktopStatePatch({ activeProfileId: profileId });
 };
 
 const ensureViews = (document: ScheduleDocument) => {
@@ -333,13 +428,17 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
 
     const savedRecords = readSavedRecords();
     const profiles = readProfiles();
+    const activeSavedRecordId = readActiveSavedRecordId();
     const activeProfileId = readActiveProfileId();
 
     // Sadece profilleri ve kayıtları yükle — belge açma, kullanıcı seçsin
     set({
       savedRecords,
       profiles,
-      activeSavedRecordId: null,
+      activeSavedRecordId:
+        activeSavedRecordId && savedRecords.some((record) => record.id === activeSavedRecordId)
+          ? activeSavedRecordId
+          : null,
       activeProfileId,
     });
     return savedRecords.length > 0 || profiles.length > 0;

@@ -176,9 +176,36 @@ export const splitRooms = (value: string) =>
     });
 
 export const formatClassLabel = (classYear: string) => {
+  return classYearToLabel(classYear);
+};
+
+const CLASS_YEAR_COLORS = [
+  { background: "#fee2e2", foreground: "#991b1b", border: "#fca5a5" },
+  { background: "#ffedd5", foreground: "#9a3412", border: "#fdba74" },
+  { background: "#fef3c7", foreground: "#92400e", border: "#fcd34d" },
+  { background: "#dcfce7", foreground: "#166534", border: "#86efac" },
+  { background: "#d1fae5", foreground: "#065f46", border: "#6ee7b7" },
+  { background: "#dbeafe", foreground: "#1d4ed8", border: "#93c5fd" },
+  { background: "#e0e7ff", foreground: "#4338ca", border: "#a5b4fc" },
+  { background: "#f3e8ff", foreground: "#7e22ce", border: "#d8b4fe" },
+  { background: "#fce7f3", foreground: "#9d174d", border: "#f9a8d4" },
+  { background: "#e2e8f0", foreground: "#334155", border: "#cbd5e1" },
+];
+
+const hashClassYear = (classYear: string) =>
+  normalizeClassYear(classYear)
+    .split("")
+    .reduce((acc, char) => acc * 31 + char.charCodeAt(0), 7);
+
+export const getClassYearColor = (classYear: string) => {
   const normalized = normalizeClassYear(classYear);
-  const match = STANDARD_CLASS_YEAR_PATTERN.exec(normalized);
-  return match ? `${match[1]}.Sınıf` : normalized;
+
+  if (!normalized) {
+    return CLASS_YEAR_COLORS[0];
+  }
+
+  const paletteIndex = Math.abs(hashClassYear(normalized)) % CLASS_YEAR_COLORS.length;
+  return CLASS_YEAR_COLORS[paletteIndex];
 };
 
 export const formatAudienceLabel = (input: Pick<ExamCard, "classYear" | "programs">) => {

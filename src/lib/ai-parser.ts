@@ -21,6 +21,23 @@ export type SheetData = {
   rows: string[][];
 };
 
+export type AIScheduleConstraint = {
+  kind: "pin-date" | "avoid-time" | "deadline" | "day-score" | "date-position";
+  subjects?: string[];
+  classYears?: string[];
+  scope?: "all" | "others";
+  dateStr?: string;
+  timeStr?: string;
+  dayKey?: string;
+  positionFromEnd?: number;
+  weight?: number;
+};
+
+export type AIScheduleInstructionPlan = {
+  constraints: AIScheduleConstraint[];
+  groupSecondForeignByClassYear: boolean;
+};
+
 // ─── Gemini tipleri ─────────────────────────────────────────────────────────
 
 interface GeminiResponse {
@@ -39,6 +56,12 @@ interface GroqResponse {
   error?: { message?: string };
 }
 
+type ModelCallOptions = {
+  systemPrompt: string;
+  maxOutputTokens: number;
+  jsonObjectMode?: boolean;
+};
+
 // ─── Sağlayıcı tespiti ──────────────────────────────────────────────────────
 
 type Provider = "groq" | "gemini";
@@ -53,14 +76,18 @@ const detectProvider = (apiKey: string): Provider => {
 
 /**
  * Groq model önceliği.
- * llama-3.1-8b-instant : en hızlı, günlük 500K token ücretsiz
- * llama-3.3-70b-versatile : daha kaliteli, biraz daha yavaş
- * mixtral-8x7b-32768    : geniş context window
+ * 2025-05-22 tarihli Groq changelog'unda mixtral-8x7b-32768 kaldırıldı.
+ * Burada yalnızca güncel production model ID'lerini tutuyoruz.
+ * llama-3.1-8b-instant   : en hızlı genel amaçlı seçenek
+ * qwen/qwen3-32b         : çok dilli metin ayrıştırmada güçlü ara fallback
+ * llama-3.3-70b-versatile: daha kaliteli, biraz daha yavaş
+ * openai/gpt-oss-20b     : ek üretim fallback'i
  */
 const GROQ_MODELS = [
   "llama-3.1-8b-instant",
+  "qwen/qwen3-32b",
   "llama-3.3-70b-versatile",
-  "mixtral-8x7b-32768",
+  "openai/gpt-oss-20b",
 ];
 
 /**
@@ -81,34 +108,44 @@ Belgeyi inceleyip TÜM dersleri doğru biçimde çıkarman gerekiyor.
 
 ━━━ BELGE FORMATLARI ━━━
 
-FORMAT A — HAFTALIK DERS PROGRAMI (tablo/grid):
-Sütunlar = günler (Pzt, Sal, Çar, Per, Cum), Satırlar = saatler (09:00, 10:00 vb.)
-Her hücre = bir ders adı (boşsa o saatte ders yok)
-SATIR BAŞLIĞI: "SÜRE" "GÜN" sütunlarını yoksay.
-⚠️ Bu formatta tablonun ÜSTÜNDEKİ başlık satırına (ör. "1. SINIF HAFTALIK DERS PROGRAMI") bak.
-   Başlıktan sınıf yılını al ve o tablodaki TÜM derslere uygula.
+FORMAT A — GÜN×SAAT TABLOSU:
+Sütunlar = günler (Pzt, Sal, Çar, Per, Cum), Satırlar = saatler.
+Tablonun ÜSTÜNDEKI başlık (ör. "2. SINIF HAFTALIK DERS PROGRAMI") → tüm derslere o sınıf yılını ata.
 Örnek:
-=== 2. SINIF HAFTALIK DERS PROGRAMI ===
-SÜRE   | PAZARTESİ         | SALI              | ÇARŞAMBA
-09-10  | Veri Yapıları     | -                 | Nesne Yönelimli
-10-11  | Türk Dili         | İngilizce II      | -
-→ Çıkar: Veri Yapıları (classYear:"2.S"), Nesne Yönelimli (classYear:"2.S"), Türk Dili (classYear:"2.S"), İngilizce II (classYear:"2.S")
+=== 2. SINIF ===
+SÜRE  | PAZARTESİ     | SALI
+09-10 | Veri Yapıları | -
+→ Çıkar: Veri Yapıları (classYear:"2.S")
 
 FORMAT B — DERS LİSTESİ (satır bazlı):
-Her satır bir ders. Sütunlar farklı sırada olabilir.
-Sınıf yılı sütunu varsa kullan. Yoksa üstteki bölüm başlığından al.
+Her satır bir ders; üstteki bölüm başlığından sınıf yılını al.
 Örnek:
 === 1. SINIF 1. YARIYIL ===
-BLM101 | Programlamaya Giriş | Dr. Ali Yılmaz | Pzt | D101
-BLM103 | Matematik I         | Prof. Ayşe Kaya | Sal | D202
-→ Çıkar her ikisi için: classYear:"1.S"
+BLM101 | Programlamaya Giriş | Dr. Ali Yılmaz
+→ classYear:"1.S"
 
-FORMAT C — SAYFA/BÖLÜM BAZLI:
-Excel'de her sayfa = bir sınıf veya bölüm (örn. sayfa adı: "1. Sınıf", "BLM-2")
-Sayfa adından sınıf/bölüm bilgisini al.
+FORMAT C — SAYFA BAZLI (Excel):
+Her sayfa adı = sınıf/bölüm ("1. Sınıf", "Seyahat 2" vb.)
 
-FORMAT D — KARMA:
-Başlık satırı var ya da yok, sütun sırası tahmin et.
+FORMAT D — DERSLİK×SAAT TABLOSU (önemli):
+Satırlar = derslikler/sınıflar (101, 102, Lab vb.), Sütunlar = saat dilimleri.
+Her hücre = o derslikte o saatte verilen ders (ders adı + hoca adı birlikte).
+Belge başlığı veya sayfa adı hangi sınıf yılı olduğunu söyler.
+
+  ⚠️ Bu formatta SADECE hücre içeriğini ders olarak al.
+     Sütun başlıkları (8:10-8:55, 9:00-9:45 gibi saatler) DERS DEĞİL, atla.
+     Satır başlıkları (101, 102, Lab gibi derslik adları) DERS DEĞİL, locationText olarak kullan.
+
+  Sınıf yılı belirleme — DERSLİK×SAAT formatı için öncelik sırası:
+  1. Belge/sayfa başlığı: "Seyahat 1"→"1.S", "Seyahat 2"→"2.S", "Seyahat 3"→"3.S", "Seyahat 4"→"4.S"
+  2. Ders adındaki Romen rakamı (bahar dönemi kuralı):
+     I veya II  → "1.S"
+     III veya IV → "2.S"
+     V veya VI  → "3.S"
+     VII veya VIII → "4.S"
+  3. Belirsizse: ""
+
+FORMAT E — KARMA: Yukarıdakilerden birini tahmin et.
 
 ━━━ ALAN TANIMLAMA KURALLARI ━━━
 
@@ -192,6 +229,79 @@ ${structuredContent}${
     : ""
 }`;
 
+const buildInstructionPrompt = (
+  courseSeeds: CourseSeed[],
+  dates: string[],
+  times: string[],
+  userInstructions: string,
+): string => {
+  const classYearMap = new Map<string, string[]>();
+
+  for (const seed of courseSeeds) {
+    const classYear = seed.classYear.trim() || "(belirsiz)";
+    const entries = classYearMap.get(classYear) ?? [];
+
+    if (!entries.includes(seed.courseName)) {
+      entries.push(seed.courseName);
+      classYearMap.set(classYear, entries);
+    }
+  }
+
+  const classYearSummary = [...classYearMap.entries()]
+    .map(
+      ([classYear, courseNames]) =>
+        `- ${classYear}: ${courseNames
+          .slice(0, 10)
+          .map((courseName) => courseName.slice(0, 48))
+          .join("; ")}`,
+    )
+    .join("\n");
+
+  return `Sen bir üniversite sınav planlama talimatı ayrıştırma asistanısın.
+
+Görevin: kullanıcının doğal dilde yazdığı sınav planlama talimatını, mevcut scheduler'ın anlayacağı yapılandırılmış JSON kısıtlarına çevirmek.
+
+Sadece geçerli bir JSON nesnesi döndür. Kod bloğu, açıklama, markdown veya ek metin yazma.
+
+Şema:
+{"constraints":[{"kind":"pin-date|avoid-time|deadline|day-score|date-position","subjects":["..."],"classYears":["1.S"],"scope":"all|others","dateStr":"14.05.2026","timeStr":"09:00","dayKey":"çarşamba","positionFromEnd":0,"weight":250}],"groupSecondForeignByClassYear":false}
+
+Kısa kurallar:
+- "son gün" => kind:"date-position", positionFromEnd:0, weight:340
+- "sondan bir önceki gün" => kind:"date-position", positionFromEnd:1, weight:320
+- "... tarihine kadar tamamlansın" => kind:"deadline", dateStr:"DD.MM.YYYY", weight:-300
+- "... tarihinde olsun" => kind:"pin-date", dateStr:"DD.MM.YYYY", weight:250
+- Belirli bir tarihten kaçınma varsa kind:"pin-date", weight:-250 kullan
+- Belirli saatten kaçınma varsa kind:"avoid-time", weight:-300 kullan
+- Belirli saati tercih etme varsa kind:"avoid-time", weight:80 kullan
+- Belirli günü tercih etme => kind:"day-score", weight:70
+- Belirli günden kaçınma => kind:"day-score", weight:-200
+- Genel İngilizce için subjects içine "__english_general__" yaz
+- Mesleki İngilizce için "__vocational_english__"
+- Almanca için "__german__"
+- Rusça için "__russian__"
+- Japonca için "__japanese__"
+- İkinci yabancı dil grubu için "__second_foreign__"
+- Çok özel ders adı belirtilirse subjects alanına küçük harfli ders adı parçası yazabilirsin
+- "diğer sınıflar" benzeri ifade varsa scope:"others" kullan, aksi halde "all"
+- classYears alanında sadece bağlamda görülen sınıf değerlerini kullan
+- İkinci yabancı dil sınavlarının aynı gün/saatte olabileceğini, seçmeli olduklarını veya bir öğrencinin iki ikinci yabancı dil alamayacağını anlatan talimat varsa groupSecondForeignByClassYear:true yap
+- Talimatta açıkça olmayan hiçbir kısıt uydurma
+- Emin değilsen boş dizi döndür: {"constraints":[],"groupSecondForeignByClassYear":false}
+
+Mevcut tarih seçenekleri:
+${dates.map((date) => `- ${date}`).join("\n") || "- (tanımlı tarih yok)"}
+
+Mevcut saat seçenekleri:
+${times.map((time) => `- ${time}`).join("\n") || "- (tanımlı saat yok)"}
+
+Bilinen sınıflar ve dersler:
+${classYearSummary || "- (ders listesi yok)"}
+
+Kullanıcı talimatı:
+${userInstructions.trim()}`;
+};
+
 // ─── Excel → yapılandırılmış tablo ──────────────────────────────────────────
 
 /**
@@ -242,6 +352,7 @@ const callGroqModel = async (
   apiKey: string,
   model: string,
   prompt: string,
+  options: ModelCallOptions,
 ): Promise<string | null> => {
   const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
@@ -255,19 +366,13 @@ const callGroqModel = async (
         {
           // Sistem mesajı: modele net görev ve çıktı formatı ver
           role: "system",
-          content:
-            "Sen bir üniversite ders programı ayrıştırma asistanısın. " +
-            "SADECE geçerli bir JSON dizisi döndür. " +
-            "Başka hiçbir metin, açıklama veya sarma nesnesi ekleme. " +
-            "Çıktın doğrudan [ ile başlamalı ve ] ile bitmeli. " +
-            "classYear alanı için: belgedeki bölüm başlıklarından (ör. '2. SINIF', 'II. SINIF') sınıf yılını belirle ve o bölümdeki tüm derslere uygula. " +
-            "Tek başına rakamlar (1, 2, 3, 4) kredi saati veya AKTS olabilir — bunları classYear olarak KULLANMA. " +
-            "Sınıf yılını belirleyemiyorsan classYear değerini boş string (\"\") olarak bırak.",
+          content: options.systemPrompt,
         },
         { role: "user", content: prompt },
       ],
       temperature: 0.05,
-      max_tokens: 8192,
+      max_tokens: options.maxOutputTokens,
+      ...(options.jsonObjectMode ? { response_format: { type: "json_object" } } : {}),
       // json_object KULLANMA — dizi döndürmemizi engeller
     }),
   });
@@ -282,30 +387,62 @@ const callGroqModel = async (
   return data.choices?.[0]?.message?.content ?? null;
 };
 
-const callGroq = async (apiKey: string, prompt: string): Promise<string | null> => {
-  let lastError = "";
+const COURSE_EXTRACTION_SYSTEM_PROMPT =
+  "Sen bir üniversite ders programı ayrıştırma asistanısın. " +
+  "SADECE geçerli bir JSON dizisi döndür. " +
+  "Başka hiçbir metin, açıklama veya sarma nesnesi ekleme. " +
+  "Çıktın doğrudan [ ile başlamalı ve ] ile bitmeli. " +
+  "classYear alanı için: belgedeki bölüm başlıklarından (ör. '2. SINIF', 'II. SINIF') sınıf yılını belirle ve o bölümdeki tüm derslere uygula. " +
+  "Tek başına rakamlar (1, 2, 3, 4) kredi saati veya AKTS olabilir — bunları classYear olarak KULLANMA. " +
+  "Sınıf yılını belirleyemiyorsan classYear değerini boş string (\"\") olarak bırak.";
+
+const INSTRUCTION_SYSTEM_PROMPT =
+  "Sen bir sınav planlama talimatı ayrıştırma asistanısın. " +
+  "SADECE geçerli bir JSON nesnesi döndür. Açıklama yazma. " +
+  "Yalnızca açıkça istenen kısıtları üret ve şemaya uy.";
+
+const callGroq = async (
+  apiKey: string,
+  prompt: string,
+  options: ModelCallOptions,
+): Promise<string | null> => {
+  const attempts: Array<{ model: string; error: string }> = [];
+
+  const isRetryableGroqError = (message: string) => {
+    const normalized = message.toLocaleLowerCase("en");
+    return (
+      normalized.includes("rate_limit") ||
+      normalized.includes("overloaded") ||
+      normalized.includes("timeout") ||
+      normalized.includes("timed out") ||
+      normalized.includes("temporarily unavailable") ||
+      normalized.includes("unavailable") ||
+      normalized.includes("529") ||
+      normalized.includes("model") ||
+      normalized.includes("not found") ||
+      normalized.includes("not supported") ||
+      normalized.includes("decommissioned")
+    );
+  };
 
   for (const model of GROQ_MODELS) {
     try {
-      return await callGroqModel(apiKey, model, prompt);
+      return await callGroqModel(apiKey, model, prompt, options);
     } catch (err) {
-      lastError = err instanceof Error ? err.message : String(err);
+      const lastError = err instanceof Error ? err.message : String(err);
+      attempts.push({ model, error: lastError });
 
-      const isRetryable =
-        lastError.includes("rate_limit") ||
-        lastError.includes("overloaded") ||
-        lastError.includes("529") ||
-        lastError.includes("model") ||
-        lastError.includes("not found") ||
-        lastError.includes("decommissioned");
-
-      if (!isRetryable) {
-        throw new Error(`Groq API hatası: ${lastError}`);
+      if (!isRetryableGroqError(lastError)) {
+        throw new Error(`Groq API hatası: ${model} -> ${lastError}`);
       }
     }
   }
 
-  throw new Error(`Groq API hatası: ${lastError}`);
+  const summary = attempts
+    .map(({ model, error }) => `${model} -> ${error}`)
+    .join(" | ");
+
+  throw new Error(`Groq API hatası: Tüm modeller başarısız oldu. ${summary}`);
 };
 
 // ─── Gemini çağrısı ──────────────────────────────────────────────────────────
@@ -314,6 +451,7 @@ const callGeminiModel = async (
   apiKey: string,
   model: string,
   prompt: string,
+  options: ModelCallOptions,
 ): Promise<string | null> => {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
@@ -324,8 +462,11 @@ const callGeminiModel = async (
       contents: [{ role: "user", parts: [{ text: prompt }] }],
       generationConfig: {
         temperature: 0.05,
-        maxOutputTokens: 16384,
+        maxOutputTokens: options.maxOutputTokens,
         responseMimeType: "application/json",
+      },
+      systemInstruction: {
+        parts: [{ text: options.systemPrompt }],
       },
     }),
   });
@@ -340,12 +481,16 @@ const callGeminiModel = async (
   return data.candidates?.[0]?.content?.parts?.[0]?.text ?? null;
 };
 
-const callGemini = async (apiKey: string, prompt: string): Promise<string | null> => {
+const callGemini = async (
+  apiKey: string,
+  prompt: string,
+  options: ModelCallOptions,
+): Promise<string | null> => {
   let lastError = "";
 
   for (const model of GEMINI_MODELS) {
     try {
-      return await callGeminiModel(apiKey, model, prompt);
+      return await callGeminiModel(apiKey, model, prompt, options);
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err);
 
@@ -366,6 +511,113 @@ const callGemini = async (apiKey: string, prompt: string): Promise<string | null
   throw new Error(`Gemini API hatası: ${lastError}`);
 };
 
+const parseJsonPayload = (raw: string): unknown => {
+  const trimmed = raw.trim();
+
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    const arrayMatch = raw.match(/\[[\s\S]*?\]/s) ?? raw.match(/\[[\s\S]*\]/);
+    const objectMatch = raw.match(/\{[\s\S]*\}/);
+
+    try {
+      if (arrayMatch) {
+        return JSON.parse(arrayMatch[0]);
+      }
+
+      if (objectMatch) {
+        return JSON.parse(objectMatch[0]);
+      }
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+};
+
+const parseAIInstructionPlan = (raw: string): AIScheduleInstructionPlan => {
+  const parsed = parseJsonPayload(raw);
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { constraints: [], groupSecondForeignByClassYear: false };
+  }
+
+  const obj = parsed as Record<string, unknown>;
+  const constraints = Array.isArray(obj.constraints) ? obj.constraints : [];
+
+  return {
+    constraints: constraints.flatMap((item) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) {
+        return [];
+      }
+
+      const entry = item as Record<string, unknown>;
+      const kind = typeof entry.kind === "string" ? entry.kind.trim() : "";
+
+      if (
+        kind !== "pin-date" &&
+        kind !== "avoid-time" &&
+        kind !== "deadline" &&
+        kind !== "day-score" &&
+        kind !== "date-position"
+      ) {
+        return [];
+      }
+
+      const subjects = Array.isArray(entry.subjects)
+        ? entry.subjects.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+        : [];
+
+      const classYears = Array.isArray(entry.classYears)
+        ? entry.classYears.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+        : [];
+
+      const dateValue =
+        typeof entry.dateStr === "string"
+          ? entry.dateStr
+          : typeof entry.date === "string"
+            ? entry.date
+            : typeof entry.targetDate === "string"
+              ? entry.targetDate
+              : undefined;
+      const timeValue =
+        typeof entry.timeStr === "string"
+          ? entry.timeStr
+          : typeof entry.time === "string"
+            ? entry.time
+            : undefined;
+      const dayValue =
+        typeof entry.dayKey === "string"
+          ? entry.dayKey
+          : typeof entry.day === "string"
+            ? entry.day
+            : undefined;
+
+      return [
+        {
+          kind,
+          subjects,
+          classYears,
+          scope: entry.scope === "others" ? "others" : "all",
+          dateStr: typeof dateValue === "string" ? dateValue.trim() : undefined,
+          timeStr: typeof timeValue === "string" ? timeValue.trim() : undefined,
+          dayKey: typeof dayValue === "string" ? dayValue.trim() : undefined,
+          positionFromEnd:
+            typeof entry.positionFromEnd === "number" && Number.isFinite(entry.positionFromEnd)
+              ? entry.positionFromEnd
+              : undefined,
+          weight:
+            typeof entry.weight === "number" && Number.isFinite(entry.weight)
+              ? entry.weight
+              : undefined,
+        } satisfies AIScheduleConstraint,
+      ];
+    }),
+    groupSecondForeignByClassYear: obj.groupSecondForeignByClassYear === true,
+  };
+};
+
 // ─── Yanıt ayrıştırma ────────────────────────────────────────────────────────
 
 /**
@@ -379,30 +631,11 @@ const parseAIResponse = (raw: string): CourseSeed[] => {
   // Debug: konsola yazdır (geliştirme/sorun giderme için)
   console.debug("[AI Parser] Ham yanıt (ilk 500 karakter):", raw.slice(0, 500));
 
-  // 1. Önce doğrudan JSON ayrıştır (temiz JSON ise)
-  const trimmed = raw.trim();
-  let parsed: unknown;
+  let parsed = parseJsonPayload(raw);
 
-  try {
-    parsed = JSON.parse(trimmed);
-  } catch {
-    // 2. Regex ile JSON dizi bul (metin içine gömülü olabilir)
-    const arrayMatch = raw.match(/\[[\s\S]*?\]/s) ?? raw.match(/\[[\s\S]*\]/);
-    const objectMatch = raw.match(/\{[\s\S]*\}/);
-
-    try {
-      if (arrayMatch) {
-        parsed = JSON.parse(arrayMatch[0]);
-      } else if (objectMatch) {
-        parsed = JSON.parse(objectMatch[0]);
-      } else {
-        console.warn("[AI Parser] JSON bulunamadı. Ham yanıt:", raw.slice(0, 300));
-        return [];
-      }
-    } catch {
-      console.warn("[AI Parser] JSON ayrıştırma hatası. Ham yanıt:", raw.slice(0, 300));
-      return [];
-    }
+  if (parsed === null) {
+    console.warn("[AI Parser] JSON ayrıştırma hatası. Ham yanıt:", raw.slice(0, 300));
+    return [];
   }
 
   // 3. Nesne içinde dizi ara: { courses: [...] } veya { data: [...] } vb.
@@ -455,10 +688,16 @@ const parseAIResponse = (raw: string): CourseSeed[] => {
 
 /** ~35K karakter ≈ ~8-10K token — her iki sağlayıcının ücretsiz kotasında rahat çalışır. */
 const MAX_CHARS = 35_000;
+const MAX_INSTRUCTION_CHARS = 6_000;
 
 const truncate = (text: string): string =>
   text.length > MAX_CHARS
     ? text.slice(0, MAX_CHARS) + "\n\n[... belge kırpıldı, ilk kısım analiz edildi ...]"
+    : text;
+
+const truncateInstruction = (text: string): string =>
+  text.length > MAX_INSTRUCTION_CHARS
+    ? text.slice(0, MAX_INSTRUCTION_CHARS) + "\n\n[... talimat bağlamı kısaltıldı ...]"
     : text;
 
 // ─── Ana fonksiyon ───────────────────────────────────────────────────────────
@@ -502,8 +741,15 @@ export const parseCoursesWithAI = async (
   try {
     const responseText =
       provider === "groq"
-        ? await callGroq(key, prompt)
-        : await callGemini(key, prompt);
+        ? await callGroq(key, prompt, {
+            systemPrompt: COURSE_EXTRACTION_SYSTEM_PROMPT,
+            maxOutputTokens: 8192,
+            jsonObjectMode: false,
+          })
+        : await callGemini(key, prompt, {
+            systemPrompt: COURSE_EXTRACTION_SYSTEM_PROMPT,
+            maxOutputTokens: 16384,
+          });
 
     if (!responseText) {
       return { seeds: [], error: "AI boş yanıt döndü.", provider };
@@ -542,5 +788,99 @@ export const parseCoursesWithAI = async (
     }
 
     return { seeds: [], error: message, provider };
+  }
+};
+
+export const interpretSchedulingInstructionsWithAI = async (
+  apiKey: string,
+  courseSeeds: CourseSeed[],
+  dates: string[],
+  times: string[],
+  userInstructions: string,
+): Promise<{ plan: AIScheduleInstructionPlan; error: string | null; provider: Provider }> => {
+  const key = apiKey.trim();
+
+  if (!key) {
+    return {
+      plan: { constraints: [], groupSecondForeignByClassYear: false },
+      error: "API anahtarı belirtilmemiş.",
+      provider: "gemini",
+    };
+  }
+
+  if (!userInstructions.trim()) {
+    return {
+      plan: { constraints: [], groupSecondForeignByClassYear: false },
+      error: null,
+      provider: detectProvider(key),
+    };
+  }
+
+  const provider = detectProvider(key);
+  const prompt = truncateInstruction(buildInstructionPrompt(courseSeeds, dates, times, userInstructions));
+
+  try {
+    const responseText =
+      provider === "groq"
+        ? await callGroq(key, prompt, {
+            systemPrompt: INSTRUCTION_SYSTEM_PROMPT,
+            maxOutputTokens: 900,
+            jsonObjectMode: true,
+          })
+        : await callGemini(key, prompt, {
+            systemPrompt: INSTRUCTION_SYSTEM_PROMPT,
+            maxOutputTokens: 1200,
+          });
+
+    if (!responseText) {
+      return {
+        plan: { constraints: [], groupSecondForeignByClassYear: false },
+        error: "AI boş yanıt döndü.",
+        provider,
+      };
+    }
+
+    const rawPayload = parseJsonPayload(responseText);
+    const plan = parseAIInstructionPlan(responseText);
+
+    if (!rawPayload || typeof rawPayload !== "object" || Array.isArray(rawPayload)) {
+      return {
+        plan: { constraints: [], groupSecondForeignByClassYear: false },
+        error: "AI talimatları geçerli bir JSON nesnesi olarak döndürmedi.",
+        provider,
+      };
+    }
+
+    if (plan.constraints.length === 0 && !plan.groupSecondForeignByClassYear) {
+      return {
+        plan,
+        error: "AI talimatlardan yapılandırılmış kısıt çıkaramadı.",
+        provider,
+      };
+    }
+
+    return { plan, error: null, provider };
+  } catch (error) {
+    const raw = error instanceof Error ? error.message : String(error);
+    const isQuota =
+      raw.toLowerCase().includes("quota") ||
+      raw.toLowerCase().includes("resource_exhausted") ||
+      raw.includes("limit: 0");
+
+    let message = raw;
+
+    if (isQuota && provider === "gemini") {
+      message =
+        "Gemini ücretsiz kotası bu hesapta aktif değil (bölge kısıtlaması). " +
+        "Groq API'yi deneyin: console.groq.com adresinden ücretsiz anahtar alın (gsk_... ile başlar).";
+    } else if (isQuota && provider === "groq") {
+      message = "Groq günlük kota doldu. Birkaç dakika bekleyip tekrar deneyin.";
+    }
+
+    return {
+      plan: { constraints: [], groupSecondForeignByClassYear: false },
+      error: message,
+      provider,
+    };
   }
 };

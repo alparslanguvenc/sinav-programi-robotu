@@ -13,8 +13,8 @@ import {
   parseProgramsInput,
   splitRooms,
 } from "./schedule";
-import { parseCoursesWithAI } from "./ai-parser";
-import type { SheetData } from "./ai-parser";
+import { interpretSchedulingInstructionsWithAI, parseCoursesWithAI } from "./ai-parser";
+import type { AIScheduleConstraint, AIScheduleInstructionPlan, SheetData } from "./ai-parser";
 import { normalizeSchoolProfile } from "./profiles";
 import { parseWorkbookArrayBuffer } from "./xlsx-parser";
 import type {
@@ -33,6 +33,7 @@ export type CourseSeed = {
   courseName: string;
   instructorText: string | null;
   locationText: string | null;
+  electiveGroupId?: string | null;
 };
 
 // ─── Kullanıcı talimatı ayrıştırıcısı ──────────────────────────────────────
@@ -102,12 +103,69 @@ const CLASS_YEAR_WORD: Record<string, string> = {
 
 const normalizeSubjectToken = (w: string): string => CLASS_YEAR_WORD[w] ?? w;
 
+type ConstraintScope = "all" | "others";
+
 /** Kısıt tipi */
 type UserConstraint =
-  | { kind: "pin-date";    dateStr: string;   weight: number; subjects: string[] }
-  | { kind: "avoid-time";  timeStr: string;   weight: number; subjects: string[] }
-  | { kind: "deadline";    before: Date;      weight: number; subjects: string[] }
-  | { kind: "day-score";   dayKey: string;    weight: number; subjects: string[] };
+  | {
+      kind: "pin-date";
+      dateStr: string;
+      weight: number;
+      subjects: string[];
+      classYears: string[];
+      scope: ConstraintScope;
+    }
+  | {
+      kind: "avoid-time";
+      timeStr: string;
+      weight: number;
+      subjects: string[];
+      classYears: string[];
+      scope: ConstraintScope;
+    }
+  | {
+      kind: "deadline";
+      before: Date;
+      weight: number;
+      subjects: string[];
+      classYears: string[];
+      scope: ConstraintScope;
+    }
+  | {
+      kind: "day-score";
+      dayKey: string;
+      weight: number;
+      subjects: string[];
+      classYears: string[];
+      scope: ConstraintScope;
+    }
+  | {
+      kind: "date-position";
+      positionFromEnd: number;
+      weight: number;
+      subjects: string[];
+      classYears: string[];
+      scope: ConstraintScope;
+    };
+
+type ParsedUserInstructions = {
+  constraints: UserConstraint[];
+  groupSecondForeignByClassYear: boolean;
+};
+
+type ResolvedUserConstraint = Exclude<UserConstraint, { kind: "date-position" }> & { scope: "all" };
+
+const SPECIAL_SUBJECT_TOKENS = {
+  english: "__english_general__",
+  vocationalEnglish: "__vocational_english__",
+  german: "__german__",
+  russian: "__russian__",
+  japanese: "__japanese__",
+  secondForeign: "__second_foreign__",
+} as const;
+
+const CLASS_YEAR_SCOPE_RE = /(\d+)\.?\s*(?:sınıf|sinif)[\p{L}]*/giu;
+const OTHER_CLASSES_RE = /\bdiğer\s+sınıf|\bdiger\s+sinif/iu;
 
 /**
  * Türkçe doğal dil talimatını yapılandırılmış kısıtlara dönüştürür.
@@ -119,8 +177,48 @@ type UserConstraint =
  *  "Fizik Cuma olmasın"                  → Cuma'dan kaçın
  *  "Dr. Kaya Salı olsun"                 → Salı'yı tercih et
  */
-export const parseUserConstraints = (instructions: string): UserConstraint[] => {
-  if (!instructions.trim()) return [];
+const extractClassYearsFromLine = (lower: string) => {
+  const matches = [...lower.matchAll(CLASS_YEAR_SCOPE_RE)];
+  return [...new Set(matches.map((match) => normalizeClassYear(`${match[1]}.S`)).filter(Boolean))];
+};
+
+const extractConstraintSubjects = (lower: string) => {
+  const tokens: string[] = [];
+
+  if (/mesleki\s+ingilizce/u.test(lower)) {
+    tokens.push(SPECIAL_SUBJECT_TOKENS.vocationalEnglish);
+  } else if (/\bingilizce\b|\benglish\b/u.test(lower)) {
+    tokens.push(SPECIAL_SUBJECT_TOKENS.english);
+  }
+
+  if (/\balmanca\b/u.test(lower)) {
+    tokens.push(SPECIAL_SUBJECT_TOKENS.german);
+  }
+  if (/\brusça\b|\brusca\b/u.test(lower)) {
+    tokens.push(SPECIAL_SUBJECT_TOKENS.russian);
+  }
+  if (/\bjaponca\b/u.test(lower)) {
+    tokens.push(SPECIAL_SUBJECT_TOKENS.japanese);
+  }
+  if (/ikinci\s+yabanc[ıi]\s+dil|2\.\s*yabanc[ıi]/u.test(lower)) {
+    tokens.push(SPECIAL_SUBJECT_TOKENS.secondForeign);
+  }
+
+  return tokens.length > 0 ? [...new Set(tokens)] : extractSubjects(lower);
+};
+
+const buildConstraintTarget = (lower: string) => ({
+  subjects: extractConstraintSubjects(lower),
+  classYears: extractClassYearsFromLine(lower),
+  scope: OTHER_CLASSES_RE.test(lower) ? "others" : "all",
+} satisfies Pick<UserConstraint, "subjects" | "classYears" | "scope">);
+
+const extractDateToken = (value: string) => value.match(/(\d{1,2}\.\d{2}\.\d{4})/)?.[1] ?? value;
+
+const parseUserInstructions = (instructions: string): ParsedUserInstructions => {
+  if (!instructions.trim()) {
+    return { constraints: [], groupSecondForeignByClassYear: false };
+  }
 
   const constraints: UserConstraint[] = [];
   // Nokta, yeni satır, ·, •, noktalı virgül ile böl — ama "14.05" gibi tarihleri bozma
@@ -131,15 +229,59 @@ export const parseUserConstraints = (instructions: string): UserConstraint[] => 
 
   for (const line of lines) {
     const lower = line.toLocaleLowerCase("tr");
+    const target = buildConstraintTarget(lower);
 
     const isAvoid    = AVOID_RE.test(lower);
     const isDeadline = DEADLINE_RE.test(lower) && !isAvoid;
 
+    const hasVocationalPenultimate =
+      /mesleki\s+ingilizce[\s\S]*?(?:sondan\s+bir\s+önceki\s+gün|sondan\s+bir\s+onceki\s+gun)/u.test(lower);
+    const hasEnglishLast = /\bingilizce\b[\s\S]*?(?:son\s+gün|son\s+gun)/u.test(lower);
+
+    if (hasVocationalPenultimate) {
+      constraints.push({
+        kind: "date-position",
+        positionFromEnd: 1,
+        weight: 320,
+        subjects: [SPECIAL_SUBJECT_TOKENS.vocationalEnglish],
+        classYears: target.classYears,
+        scope: target.scope,
+      });
+    }
+
+    if (hasEnglishLast) {
+      constraints.push({
+        kind: "date-position",
+        positionFromEnd: 0,
+        weight: 340,
+        subjects: [SPECIAL_SUBJECT_TOKENS.english],
+        classYears: target.classYears,
+        scope: target.scope,
+      });
+    }
+
+    if (
+      !hasVocationalPenultimate &&
+      /sondan\s+bir\s+önceki\s+gün|sondan\s+bir\s+onceki\s+gun/u.test(lower)
+    ) {
+      constraints.push({
+        kind: "date-position",
+        positionFromEnd: 1,
+        weight: 320,
+        ...target,
+      });
+    } else if (!hasEnglishLast && /son\s+gün|son\s+gun/u.test(lower)) {
+      constraints.push({
+        kind: "date-position",
+        positionFromEnd: 0,
+        weight: 340,
+        ...target,
+      });
+    }
+
     // ── 1. Belirli tarih kısıtları (DD.MM.YYYY) ──────────────────────────
     const dateMatches = [...lower.matchAll(/(\d{1,2}\.\d{2}\.\d{4})/g)];
     if (dateMatches.length > 0) {
-      const subjects = extractSubjects(lower);
-
       for (const dm of dateMatches) {
         const dateStr = dm[1];
         const parsedDate = parseTrDate(dateStr);
@@ -147,11 +289,11 @@ export const parseUserConstraints = (instructions: string): UserConstraint[] => 
 
         if (isDeadline && !isAvoid) {
           // "tarihine kadar tamamlansın" → o tarihten sonraki slotları cezalandır
-          constraints.push({ kind: "deadline", before: parsedDate, weight: -300, subjects });
+          constraints.push({ kind: "deadline", before: parsedDate, weight: -300, ...target });
         } else {
           // "tarihinde olsun" → o tarihe yönlendir (+250), diğer tarihlerden kaçın (-60)
           const weight = isAvoid ? -250 : 250;
-          constraints.push({ kind: "pin-date", dateStr, weight, subjects });
+          constraints.push({ kind: "pin-date", dateStr, weight, ...target });
         }
       }
       // Aynı satırda saat de olabilir, devam et
@@ -160,10 +302,9 @@ export const parseUserConstraints = (instructions: string): UserConstraint[] => 
     // ── 2. Belirli saat kısıtları (HH:MM) ────────────────────────────────
     const timeMatches = [...lower.matchAll(/(\d{1,2}:\d{2})/g)];
     if (timeMatches.length > 0) {
-      const subjects = extractSubjects(lower);
       const weight = isAvoid ? -300 : 80;
       for (const tm of timeMatches) {
-        constraints.push({ kind: "avoid-time", timeStr: tm[1], weight, subjects });
+        constraints.push({ kind: "avoid-time", timeStr: tm[1], weight, ...target });
       }
     }
 
@@ -174,15 +315,214 @@ export const parseUserConstraints = (instructions: string): UserConstraint[] => 
     for (const [dayKey, variants] of Object.entries(DAY_TOKENS)) {
       if (variants.some((v) => lower.includes(v))) {
         const weight = isAvoid ? -200 : 70;
-        const subjects = extractSubjects(lower);
-        constraints.push({ kind: "day-score", dayKey, weight, subjects });
+        constraints.push({ kind: "day-score", dayKey, weight, ...target });
         break;
       }
     }
   }
 
-  return constraints;
+  const lowerInstructions = instructions.toLocaleLowerCase("tr");
+  const hasSecondForeignMention =
+    /almanca|japonca|rusça|rusca|ikinci\s+yabanc[ıi]\s+dil|2\.\s*yabanc[ıi]/u.test(lowerInstructions);
+  const wantsSameSlot =
+    /ayn[ıi]\s+g[üu]n[\s\S]{0,80}ayn[ıi]\s+saat|ayn[ıi]\s+saat[\s\S]{0,80}ayn[ıi]\s+g[üu]n/u.test(lowerInstructions);
+  const marksElective = /seçmeli|secmeli/u.test(lowerInstructions);
+  const saysOneStudentOnlyOneSecondForeign =
+    /bir\s+öğrenci[\s\S]{0,80}ikinci\s+yabanc[ıi]\s+dil|iki\s+tane\s+ikinci\s+yabanc[ıi]\s+dil/u.test(
+      lowerInstructions,
+    );
+
+  return {
+    constraints,
+    groupSecondForeignByClassYear:
+      hasSecondForeignMention && (wantsSameSlot || marksElective || saysOneStudentOnlyOneSecondForeign),
+  };
 };
+
+const constraintKey = (constraint: UserConstraint) => {
+  const sortedSubjects = [...constraint.subjects].sort().join("|");
+  const sortedClassYears = [...constraint.classYears].sort().join("|");
+  const scope = constraint.scope;
+
+  switch (constraint.kind) {
+    case "pin-date":
+      return `pin-date::${constraint.dateStr}::${constraint.weight}::${sortedSubjects}::${sortedClassYears}::${scope}`;
+    case "avoid-time":
+      return `avoid-time::${constraint.timeStr}::${constraint.weight}::${sortedSubjects}::${sortedClassYears}::${scope}`;
+    case "deadline":
+      return `deadline::${constraint.before.toISOString()}::${constraint.weight}::${sortedSubjects}::${sortedClassYears}::${scope}`;
+    case "day-score":
+      return `day-score::${constraint.dayKey}::${constraint.weight}::${sortedSubjects}::${sortedClassYears}::${scope}`;
+    case "date-position":
+      return `date-position::${constraint.positionFromEnd}::${constraint.weight}::${sortedSubjects}::${sortedClassYears}::${scope}`;
+  }
+};
+
+const mergeParsedUserInstructions = (
+  base: ParsedUserInstructions,
+  extra: ParsedUserInstructions,
+): ParsedUserInstructions => {
+  const seen = new Set<string>();
+  const constraints = [...base.constraints, ...extra.constraints].filter((constraint) => {
+    const key = constraintKey(constraint);
+    if (seen.has(key)) {
+      return false;
+    }
+
+    seen.add(key);
+    return true;
+  });
+
+  return {
+    constraints,
+    groupSecondForeignByClassYear:
+      base.groupSecondForeignByClassYear || extra.groupSecondForeignByClassYear,
+  };
+};
+
+const normalizeAiSubjectToken = (subject: string) => {
+  const lower = subject.trim().toLocaleLowerCase("tr");
+
+  if (!lower) {
+    return "";
+  }
+
+  if (/mesleki\s+ingilizce/u.test(lower)) {
+    return SPECIAL_SUBJECT_TOKENS.vocationalEnglish;
+  }
+  if (/\bingilizce\b|\benglish\b/u.test(lower)) {
+    return SPECIAL_SUBJECT_TOKENS.english;
+  }
+  if (/\balmanca\b|\bgerman\b/u.test(lower)) {
+    return SPECIAL_SUBJECT_TOKENS.german;
+  }
+  if (/\brusça\b|\brusca\b|\brussian\b/u.test(lower)) {
+    return SPECIAL_SUBJECT_TOKENS.russian;
+  }
+  if (/\bjaponca\b|\bjapanese\b/u.test(lower)) {
+    return SPECIAL_SUBJECT_TOKENS.japanese;
+  }
+  if (/ikinci\s+yabanc[ıi]\s+dil|second\s+foreign/u.test(lower)) {
+    return SPECIAL_SUBJECT_TOKENS.secondForeign;
+  }
+
+  return lower;
+};
+
+const normalizeAiDayKey = (dayKey: string) => {
+  const lower = dayKey.trim().toLocaleLowerCase("tr");
+
+  for (const [canonicalDay, variants] of Object.entries(DAY_TOKENS)) {
+    if (canonicalDay === lower || variants.includes(lower)) {
+      return canonicalDay;
+    }
+  }
+
+  return "";
+};
+
+const aiConstraintToUserConstraint = (constraint: AIScheduleConstraint): UserConstraint | null => {
+  const subjects = [...new Set((constraint.subjects ?? []).map(normalizeAiSubjectToken).filter(Boolean))];
+  const classYears = [...new Set((constraint.classYears ?? []).map((value) => normalizeClassYear(value)).filter(Boolean))];
+  const scope: ConstraintScope = constraint.scope === "others" ? "others" : "all";
+
+  switch (constraint.kind) {
+    case "pin-date": {
+      const dateStr = extractDateToken(constraint.dateStr ?? "");
+      if (!dateStr) {
+        return null;
+      }
+
+      return {
+        kind: "pin-date",
+        dateStr,
+        weight: typeof constraint.weight === "number" ? constraint.weight : 250,
+        subjects,
+        classYears,
+        scope,
+      };
+    }
+    case "avoid-time": {
+      const timeStr = (constraint.timeStr ?? "").trim();
+      if (!timeStr) {
+        return null;
+      }
+
+      return {
+        kind: "avoid-time",
+        timeStr,
+        weight: typeof constraint.weight === "number" ? constraint.weight : -300,
+        subjects,
+        classYears,
+        scope,
+      };
+    }
+    case "deadline": {
+      const dateStr = extractDateToken(constraint.dateStr ?? "");
+      const before = parseTrDate(dateStr);
+      if (!before) {
+        return null;
+      }
+
+      return {
+        kind: "deadline",
+        before,
+        weight: typeof constraint.weight === "number" ? constraint.weight : -300,
+        subjects,
+        classYears,
+        scope,
+      };
+    }
+    case "day-score": {
+      const dayKey = normalizeAiDayKey(constraint.dayKey ?? "");
+      if (!dayKey) {
+        return null;
+      }
+
+      return {
+        kind: "day-score",
+        dayKey,
+        weight: typeof constraint.weight === "number" ? constraint.weight : 70,
+        subjects,
+        classYears,
+        scope,
+      };
+    }
+    case "date-position": {
+      const positionFromEnd =
+        typeof constraint.positionFromEnd === "number" && constraint.positionFromEnd >= 0
+          ? Math.floor(constraint.positionFromEnd)
+          : null;
+      if (positionFromEnd === null) {
+        return null;
+      }
+
+      return {
+        kind: "date-position",
+        positionFromEnd,
+        weight:
+          typeof constraint.weight === "number"
+            ? constraint.weight
+            : positionFromEnd === 0
+              ? 340
+              : 320,
+        subjects,
+        classYears,
+        scope,
+      };
+    }
+  }
+};
+
+const parsedInstructionsFromAIPlan = (plan: AIScheduleInstructionPlan): ParsedUserInstructions => ({
+  constraints: plan.constraints
+    .map(aiConstraintToUserConstraint)
+    .filter((constraint): constraint is UserConstraint => Boolean(constraint)),
+  groupSecondForeignByClassYear: plan.groupSecondForeignByClassYear,
+});
+
+export const parseUserConstraints = (instructions: string): UserConstraint[] =>
+  parseUserInstructions(instructions).constraints;
 
 /** Bir satırdan özne token'larını çıkarır (tarih/saat/fiil/stop kelimeleri hariç) */
 const extractSubjects = (lower: string): string[] =>
@@ -194,31 +534,181 @@ const extractSubjects = (lower: string): string[] =>
     .filter((w) => w.length >= 2 && !STOP_WORDS.has(w))
     .map(normalizeSubjectToken);
 
+const isVocationalEnglishCourse = (courseName: string): boolean =>
+  /\bmesleki\s+ingilizce\b/i.test(courseName);
+
+const matchesConstraintToken = (token: string, courseSeed: CourseSeed, entityStr: string) => {
+  const courseLC = courseSeed.courseName.toLocaleLowerCase("tr");
+
+  switch (token) {
+    case SPECIAL_SUBJECT_TOKENS.english:
+      return isEnglishCourse(courseLC) && !isVocationalEnglishCourse(courseLC);
+    case SPECIAL_SUBJECT_TOKENS.vocationalEnglish:
+      return isVocationalEnglishCourse(courseLC);
+    case SPECIAL_SUBJECT_TOKENS.german:
+      return /\balmanca\b/i.test(courseLC);
+    case SPECIAL_SUBJECT_TOKENS.russian:
+      return /\brusça\b|\brusca\b/i.test(courseLC);
+    case SPECIAL_SUBJECT_TOKENS.japanese:
+      return /\bjaponca\b/i.test(courseLC);
+    case SPECIAL_SUBJECT_TOKENS.secondForeign:
+      return isSecondForeignLanguage(courseLC);
+    default:
+      return entityStr.includes(token);
+  }
+};
+
+const matchesUserConstraint = (
+  constraint: Pick<UserConstraint, "subjects" | "classYears">,
+  courseSeed: CourseSeed,
+) => {
+  const normalizedClassYear = normalizeClassYear(courseSeed.classYear);
+  const classMatches =
+    constraint.classYears.length === 0 || constraint.classYears.includes(normalizedClassYear);
+
+  if (!classMatches) {
+    return false;
+  }
+
+  if (constraint.subjects.length === 0) {
+    return true;
+  }
+
+  const courseLC = courseSeed.courseName.toLocaleLowerCase("tr");
+  const instrLC = (courseSeed.instructorText ?? "").toLocaleLowerCase("tr");
+  const entityStr = `${courseLC} ${instrLC} ${normalizedClassYear.toLocaleLowerCase("tr")}`;
+
+  return constraint.subjects.some((token) => matchesConstraintToken(token, courseSeed, entityStr));
+};
+
+const resolveUserConstraints = (
+  constraints: UserConstraint[],
+  courseSeeds: CourseSeed[],
+  dates: string[],
+): ResolvedUserConstraint[] => {
+  const allClassYears = [
+    ...new Set(courseSeeds.map((seed) => normalizeClassYear(seed.classYear)).filter(Boolean)),
+  ];
+  const explicitlyMentionedClassYears = new Set(
+    constraints
+      .filter((constraint) => constraint.scope !== "others")
+      .flatMap((constraint) => constraint.classYears),
+  );
+
+  return constraints
+    .map((constraint) => {
+      const classYears =
+        constraint.scope === "others"
+          ? allClassYears.filter((classYear) => !explicitlyMentionedClassYears.has(classYear))
+          : constraint.classYears;
+
+      if (constraint.kind === "date-position") {
+        const targetDate = dates[dates.length - 1 - constraint.positionFromEnd];
+        if (!targetDate) {
+          return null;
+        }
+
+        return {
+          kind: "pin-date",
+          dateStr: extractDateToken(targetDate),
+          weight: constraint.weight,
+          subjects: constraint.subjects,
+          classYears,
+          scope: "all",
+        } satisfies ResolvedUserConstraint;
+      }
+
+      return {
+        ...constraint,
+        classYears,
+        scope: "all",
+      } satisfies ResolvedUserConstraint;
+    })
+    .filter((constraint): constraint is ResolvedUserConstraint => Boolean(constraint));
+};
+
+const applyInstructionSeedMetadata = (
+  courseSeeds: CourseSeed[],
+  instructions: ParsedUserInstructions,
+) =>
+  courseSeeds.map((courseSeed) => {
+    const normalizedClassYear = normalizeClassYear(courseSeed.classYear);
+    const electiveGroupId =
+      courseSeed.electiveGroupId ??
+      (instructions.groupSecondForeignByClassYear &&
+      normalizedClassYear &&
+      isSecondForeignLanguage(courseSeed.courseName.toLocaleLowerCase("tr"))
+        ? `second-foreign::${normalizedClassYear}`
+        : null);
+
+    return {
+      ...courseSeed,
+      electiveGroupId,
+    };
+  });
+
+const filterSlotsByConstraintDates = (
+  slots: string[],
+  matchingConstraints: ResolvedUserConstraint[],
+) => {
+  let filteredSlots = [...slots];
+
+  const preferredDates = [
+    ...new Set(
+      matchingConstraints
+        .filter(
+          (constraint): constraint is Extract<ResolvedUserConstraint, { kind: "pin-date" }> =>
+            constraint.kind === "pin-date" && constraint.weight > 0,
+        )
+        .map((constraint) => constraint.dateStr),
+    ),
+  ];
+
+  if (preferredDates.length > 0) {
+    const preferredSlots = filteredSlots.filter((slotKey) =>
+      preferredDates.some((dateStr) => getDateFromSlot(slotKey).includes(dateStr)),
+    );
+
+    if (preferredSlots.length > 0) {
+      filteredSlots = preferredSlots;
+    }
+  }
+
+  const deadlineConstraints = matchingConstraints.filter(
+    (constraint): constraint is Extract<ResolvedUserConstraint, { kind: "deadline" }> =>
+      constraint.kind === "deadline",
+  );
+
+  if (deadlineConstraints.length > 0) {
+    const deadlineSlots = filteredSlots.filter((slotKey) => {
+      const slotDate = parseDateFromSlotDate(getDateFromSlot(slotKey));
+      if (!slotDate) {
+        return true;
+      }
+
+      return deadlineConstraints.every((constraint) => slotDate <= constraint.before);
+    });
+
+    if (deadlineSlots.length > 0) {
+      filteredSlots = deadlineSlots;
+    }
+  }
+
+  return filteredSlots;
+};
+
 /** Bir slot için kullanıcı kısıt skorunu hesaplar */
 const applyUserConstraints = (
-  constraints: UserConstraint[],
+  constraints: ResolvedUserConstraint[],
   slotKey: string,
-  courseSeed: CourseSeed,
 ): number => {
   if (constraints.length === 0) return 0;
 
   const { date: slotDate, time: slotTime } = splitSlotKey(slotKey);
   const dateLower  = slotDate.toLocaleLowerCase("tr");
-  const courseLC   = courseSeed.courseName.toLocaleLowerCase("tr");
-  const instrLC    = (courseSeed.instructorText ?? "").toLocaleLowerCase("tr");
-  const yearNorm   = normalizeClassYear(courseSeed.classYear).toLocaleLowerCase("tr");
-  const entityStr  = `${courseLC} ${instrLC} ${yearNorm}`;
-
   let totalScore = 0;
 
   for (const c of constraints) {
-    // Özne eşleşme kontrolü: boşsa herkese uygula
-    const subjectMatches =
-      c.subjects.length === 0 ||
-      c.subjects.some((token) => entityStr.includes(token));
-
-    if (!subjectMatches) continue;
-
     switch (c.kind) {
       case "pin-date": {
         // Slot tarihinde DD.MM.YYYY var mı?
@@ -268,6 +758,7 @@ export const extractCourseSeeds = (exams: ExamCard[]): CourseSeed[] =>
     courseName: exam.courseName,
     instructorText: exam.instructorText ?? null,
     locationText: exam.locationText ?? null,
+    electiveGroupId: exam.electiveGroupId ?? null,
   }));
 
 type ImportOptions = {
@@ -277,6 +768,14 @@ type ImportOptions = {
   useAI?: boolean;
   /** Kullanıcının AI'ya iletmek istediği ek talimatlar */
   userInstructions?: string;
+  /** Dışarıda önceden çözülmüş talimatlar varsa yeniden parse etme */
+  parsedInstructions?: ParsedUserInstructions | null;
+};
+
+type InstructionAiStatus = {
+  used: boolean;
+  error: string | null;
+  provider?: string;
 };
 
 type ImportedScheduleResult = {
@@ -285,6 +784,7 @@ type ImportedScheduleResult = {
   message: string;
   /** AI kullanıldıysa sonuç bilgisi */
   aiStatus?: { used: boolean; seedCount: number; error: string | null; provider?: string };
+  instructionAiStatus?: InstructionAiStatus;
 };
 
 const DEFAULT_DATES = ["1. Gün", "2. Gün", "3. Gün", "4. Gün", "5. Gün"];
@@ -312,13 +812,15 @@ const normalizeSearchText = (value: string) =>
     .replace(/\s+/g, " ")
     .trim();
 
+const normalizeCompactSearchText = (value: string) => normalizeSearchText(value).replace(/\s+/g, "");
+
 const uniqueCourseSeeds = (courseSeeds: CourseSeed[]) => {
   const seen = new Set<string>();
 
   return courseSeeds.filter((courseSeed) => {
     const key = `${formatPrograms(courseSeed.programs).toLocaleLowerCase("tr")}::${normalizeClassYear(
       courseSeed.classYear,
-    )}::${normalizeSearchText(courseSeed.courseName)}`;
+    )}::${normalizeCompactSearchText(courseSeed.courseName)}`;
 
     if (seen.has(key)) {
       return false;
@@ -335,6 +837,16 @@ const inferClassYear = (value: string) => {
 
   if (match) {
     return normalizeClassYear(`${match[1]}.S`);
+  }
+
+  // "Seyahat N" / "N. Grup" / "N. Şube" kalıpları → N.S
+  const seyahatMatch = /\b(?:seyahat|grup|şube|sube)\s+(\d+)\b/i.exec(trimmed);
+  if (seyahatMatch) {
+    return normalizeClassYear(`${seyahatMatch[1]}.S`);
+  }
+  const seyahatMatch2 = /\b(\d+)\.\s*(?:grup|şube|sube)\b/i.exec(trimmed);
+  if (seyahatMatch2) {
+    return normalizeClassYear(`${seyahatMatch2[1]}.S`);
   }
 
   return /(hazırlık|hazirlik|prep)/i.test(trimmed) ? trimmed : "";
@@ -556,14 +1068,23 @@ const mergeWithProfile = (courseSeeds: CourseSeed[], profile: SchoolProfile | nu
     const normalizedClassYear = normalizeClassYear(courseTemplate.classYear);
     const normalizedPrograms = formatPrograms(courseTemplate.programs).toLocaleLowerCase("tr");
     const normalizedCourseName = normalizeSearchText(courseTemplate.courseName);
-    byExactKey.set(`${normalizedClassYear}::${normalizedCourseName}`, courseTemplate);
-    byExactKey.set(
+    const compactCourseName = normalizeCompactSearchText(courseTemplate.courseName);
+    const exactKeys = [
+      `${normalizedClassYear}::${normalizedCourseName}`,
       `${normalizedPrograms}::${normalizedClassYear}::${normalizedCourseName}`,
-      courseTemplate,
-    );
+      `${normalizedClassYear}::${compactCourseName}`,
+      `${normalizedPrograms}::${normalizedClassYear}::${compactCourseName}`,
+    ];
+
+    for (const key of exactKeys) {
+      byExactKey.set(key, courseTemplate);
+    }
 
     if (!byCourseKey.has(normalizedCourseName)) {
       byCourseKey.set(normalizedCourseName, courseTemplate);
+    }
+    if (!byCourseKey.has(compactCourseName)) {
+      byCourseKey.set(compactCourseName, courseTemplate);
     }
   }
 
@@ -572,10 +1093,14 @@ const mergeWithProfile = (courseSeeds: CourseSeed[], profile: SchoolProfile | nu
       const normalizedClassYear = normalizeClassYear(courseSeed.classYear);
       const normalizedPrograms = formatPrograms(courseSeed.programs).toLocaleLowerCase("tr");
       const normalizedCourseName = normalizeSearchText(courseSeed.courseName);
+      const compactCourseName = normalizeCompactSearchText(courseSeed.courseName);
       const matchedTemplate =
         byExactKey.get(`${normalizedPrograms}::${normalizedClassYear}::${normalizedCourseName}`) ??
         byExactKey.get(`${normalizedClassYear}::${normalizedCourseName}`) ??
-        byCourseKey.get(normalizedCourseName);
+        byExactKey.get(`${normalizedPrograms}::${normalizedClassYear}::${compactCourseName}`) ??
+        byExactKey.get(`${normalizedClassYear}::${compactCourseName}`) ??
+        byCourseKey.get(normalizedCourseName) ??
+        byCourseKey.get(compactCourseName);
 
       return {
         programs: matchedTemplate?.programs ?? courseSeed.programs,
@@ -583,6 +1108,7 @@ const mergeWithProfile = (courseSeeds: CourseSeed[], profile: SchoolProfile | nu
         courseName: matchedTemplate?.courseName ?? courseSeed.courseName,
         instructorText: matchedTemplate?.instructorText ?? courseSeed.instructorText,
         locationText: matchedTemplate?.locationText ?? courseSeed.locationText,
+        electiveGroupId: courseSeed.electiveGroupId ?? null,
       };
     }),
   );
@@ -654,6 +1180,65 @@ const resolveTemplate = (
   };
 };
 
+const resolveParsedInstructionsWithAI = async (
+  courseSeeds: CourseSeed[],
+  options: ImportOptions,
+  template: Pick<ScheduleDocument["template"], "dates" | "times">,
+): Promise<{ parsedInstructions: ParsedUserInstructions; instructionAiStatus: InstructionAiStatus }> => {
+  const existingInstructions = options.parsedInstructions;
+
+  if (existingInstructions) {
+    return {
+      parsedInstructions: existingInstructions,
+      instructionAiStatus: { used: false, error: null },
+    };
+  }
+
+  const parsedInstructions = parseUserInstructions(options.userInstructions ?? "");
+  const trimmedInstructions = options.userInstructions?.trim() ?? "";
+  const profile = options.profile ? normalizeSchoolProfile(options.profile) : null;
+  const apiKey = profile?.geminiApiKey?.trim();
+
+  if (!trimmedInstructions || !options.useAI || !apiKey) {
+    return {
+      parsedInstructions,
+      instructionAiStatus: { used: false, error: null },
+    };
+  }
+
+  const aiResult = await interpretSchedulingInstructionsWithAI(
+    apiKey,
+    courseSeeds,
+    template.dates,
+    template.times,
+    trimmedInstructions,
+  );
+
+  if (aiResult.error) {
+    return {
+      parsedInstructions,
+      instructionAiStatus: {
+        used: false,
+        error: aiResult.error,
+        provider: aiResult.provider === "groq" ? "Groq" : "Gemini",
+      },
+    };
+  }
+
+  const aiInstructions = parsedInstructionsFromAIPlan(aiResult.plan);
+  const mergedInstructions = mergeParsedUserInstructions(parsedInstructions, aiInstructions);
+
+  return {
+    parsedInstructions: mergedInstructions,
+    instructionAiStatus: {
+      used:
+        aiInstructions.constraints.length > 0 || aiInstructions.groupSecondForeignByClassYear,
+      error: null,
+      provider: aiResult.provider === "groq" ? "Groq" : "Gemini",
+    },
+  };
+};
+
 /** Get date portion from a slot key */
 const getDateFromSlot = (slotKey: string): string => {
   const sepIndex = slotKey.indexOf("__@@__");
@@ -701,6 +1286,9 @@ const TIME_EXPANSION_POOL = [
   "08:00", "17:00", "18:00",
 ];
 
+const sharesElectiveGroup = (exam: ExamCard, electiveGroupId: string | null | undefined) =>
+  Boolean(electiveGroupId) && exam.electiveGroupId === electiveGroupId;
+
 const selectSlotForExam = (
   slots: string[],
   examsBySlot: Map<string, ExamCard[]>,
@@ -709,12 +1297,15 @@ const selectSlotForExam = (
   /** true → çakışmasız slot yoksa null döner (yeni saat eklenmesi için sinyal) */
   strictMode: boolean = false,
   /** Kullanıcı talimatından türetilmiş kısıtlar */
-  userConstraints: UserConstraint[] = [],
+  userConstraints: ResolvedUserConstraint[] = [],
+  preferredSlotKey: string | null = null,
 ) => {
   const normalizedClassYear = normalizeClassYear(courseSeed.classYear);
   const normalizedPrograms = normalizePrograms(courseSeed.programs);
   const requestedRooms = splitRooms(courseSeed.locationText ?? "");
   const instructorLower = courseSeed.instructorText?.trim().toLocaleLowerCase("tr") ?? null;
+  const matchingConstraints = userConstraints.filter((constraint) => matchesUserConstraint(constraint, courseSeed));
+  const candidateSlots = filterSlotsByConstraintDates(slots, matchingConstraints);
 
   // Build a map: date → list of {startMin, endMin} for existing same-class exams
   const classYearDayCounts = new Map<string, number>();
@@ -723,6 +1314,10 @@ const selectSlotForExam = (
   for (const [slotKey, slotExams] of examsBySlot) {
     const date = getDateFromSlot(slotKey);
     for (const exam of slotExams) {
+      if (sharesElectiveGroup(exam, courseSeed.electiveGroupId)) {
+        continue;
+      }
+
       if (normalizedClassYear && normalizeClassYear(exam.classYear) === normalizedClassYear) {
         const key = `${normalizedClassYear}::${date}`;
         classYearDayCounts.set(key, (classYearDayCounts.get(key) ?? 0) + 1);
@@ -768,17 +1363,19 @@ const selectSlotForExam = (
   const preferThursday = isSecondForeignLanguage(courseNameLower);
 
   // Filter hard constraints
-  const candidates = slots.filter((slotKey) => {
+  const candidates = candidateSlots.filter((slotKey) => {
     const slotExams = examsBySlot.get(slotKey) ?? [];
 
     // Hard constraint: no class/audience overlap
     if (
       normalizedClassYear &&
-      slotExams.some((exam) =>
-        doAudiencesOverlap(
-          { classYear: normalizedClassYear, programs: normalizedPrograms },
-          exam,
-        ),
+      slotExams.some(
+        (exam) =>
+          !sharesElectiveGroup(exam, courseSeed.electiveGroupId) &&
+          doAudiencesOverlap(
+            { classYear: normalizedClassYear, programs: normalizedPrograms },
+            exam,
+          ),
       )
     ) {
       return false;
@@ -815,7 +1412,7 @@ const selectSlotForExam = (
   });
 
   // Score each candidate slot
-  const scoredSlots = (candidates.length > 0 ? candidates : slots).map((slotKey) => {
+  const scoredSlots = (candidates.length > 0 ? candidates : candidateSlots).map((slotKey) => {
     let score = 100; // base score
     const slotExams = examsBySlot.get(slotKey) ?? [];
     const date = getDateFromSlot(slotKey).toLocaleLowerCase("tr");
@@ -838,10 +1435,14 @@ const selectSlotForExam = (
     }
 
     // Kullanıcı talimat kısıtları
-    score += applyUserConstraints(userConstraints, slotKey, courseSeed);
+    score += applyUserConstraints(matchingConstraints, slotKey);
+
+    if (preferredSlotKey && slotKey === preferredSlotKey) {
+      score += 500;
+    }
 
     // Small bonus for earlier slots (maintain order)
-    score -= slots.indexOf(slotKey) * 0.1;
+    score -= candidateSlots.indexOf(slotKey) * 0.1;
 
     return { slotKey, score };
   });
@@ -864,9 +1465,11 @@ export const buildAutoScheduleDocument = (
 ) => {
   const profile = options.profile ? normalizeSchoolProfile(options.profile) : null;
   const template = resolveTemplate(profile, options.fallbackTemplate);
+  const hasPinnedTimes = (profile?.times.length ?? 0) > 0 || (options.fallbackTemplate?.times?.length ?? 0) > 0;
 
   // Kullanıcı talimatını yapılandırılmış kısıtlara dönüştür
-  const userConstraints = parseUserConstraints(options.userInstructions ?? "");
+  const parsedInstructions = options.parsedInstructions ?? parseUserInstructions(options.userInstructions ?? "");
+  const seededConstraints = resolveUserConstraints(parsedInstructions.constraints, courseSeeds, template.dates);
 
   // Değiştirilebilir saat listesi — çakışma çözülemeyince yeni saat eklenir
   const mutableTimes: string[] = [...template.times];
@@ -888,7 +1491,8 @@ export const buildAutoScheduleDocument = (
   };
 
   const examsBySlot = new Map<string, ExamCard[]>();
-  const sortedSeeds = uniqueCourseSeeds(courseSeeds).sort((left, right) => {
+  const electiveGroupSlots = new Map<string, string>();
+  const sortedSeeds = applyInstructionSeedMetadata(uniqueCourseSeeds(courseSeeds), parsedInstructions).sort((left, right) => {
     const classDelta = normalizeClassYear(left.classYear).localeCompare(
       normalizeClassYear(right.classYear),
       "tr",
@@ -901,18 +1505,57 @@ export const buildAutoScheduleDocument = (
 
   const exams = sortedSeeds.map((courseSeed) => {
     const defaultDuration = profile?.defaultExamDuration ?? DEFAULT_EXAM_DURATION;
+    const preferredSlotKey =
+      courseSeed.electiveGroupId ? electiveGroupSlots.get(courseSeed.electiveGroupId) ?? null : null;
 
     // Önce strict modda dene: çakışmasız slot var mı?
-    let slotKey = selectSlotForExam(slots, examsBySlot, courseSeed, defaultDuration, true, userConstraints);
+    let slotKey = selectSlotForExam(
+      slots,
+      examsBySlot,
+      courseSeed,
+      defaultDuration,
+      true,
+      seededConstraints,
+      preferredSlotKey,
+    );
 
     // Çakışmasız slot bulunamadıysa yeni saat ekleyerek tekrar dene
     while (slotKey === null) {
-      if (!expandTimeSlots()) {
-        // Havuz bitti — çakışmalı da olsa en iyi slota yerleştir
-        slotKey = selectSlotForExam(slots, examsBySlot, courseSeed, defaultDuration, false, userConstraints);
+      if (hasPinnedTimes) {
+        slotKey = selectSlotForExam(
+          slots,
+          examsBySlot,
+          courseSeed,
+          defaultDuration,
+          false,
+          seededConstraints,
+          preferredSlotKey,
+        );
         break;
       }
-      slotKey = selectSlotForExam(slots, examsBySlot, courseSeed, defaultDuration, true, userConstraints);
+
+      if (!expandTimeSlots()) {
+        // Havuz bitti — çakışmalı da olsa en iyi slota yerleştir
+        slotKey = selectSlotForExam(
+          slots,
+          examsBySlot,
+          courseSeed,
+          defaultDuration,
+          false,
+          seededConstraints,
+          preferredSlotKey,
+        );
+        break;
+      }
+      slotKey = selectSlotForExam(
+        slots,
+        examsBySlot,
+        courseSeed,
+        defaultDuration,
+        true,
+        seededConstraints,
+        preferredSlotKey,
+      );
     }
 
     const exam: ExamCard = {
@@ -924,9 +1567,14 @@ export const buildAutoScheduleDocument = (
       locationText: courseSeed.locationText ?? "Belirlenecek",
       rooms: splitRooms(courseSeed.locationText ?? ""),
       instructorText: courseSeed.instructorText ?? null,
+      electiveGroupId: courseSeed.electiveGroupId ?? null,
     };
 
     if (slotKey) {
+      if (courseSeed.electiveGroupId && !electiveGroupSlots.has(courseSeed.electiveGroupId)) {
+        electiveGroupSlots.set(courseSeed.electiveGroupId, slotKey);
+      }
+
       const existing = examsBySlot.get(slotKey);
       if (existing) {
         existing.push(exam);
@@ -962,6 +1610,28 @@ export const buildAutoScheduleDocument = (
   });
 };
 
+export const buildAutoScheduleDocumentWithAI = async (
+  courseSeeds: CourseSeed[],
+  sourceFileName: string,
+  options: ImportOptions = {},
+): Promise<{ document: ScheduleDocument; instructionAiStatus: InstructionAiStatus }> => {
+  const profile = options.profile ? normalizeSchoolProfile(options.profile) : null;
+  const template = resolveTemplate(profile, options.fallbackTemplate);
+  const { parsedInstructions, instructionAiStatus } = await resolveParsedInstructionsWithAI(
+    courseSeeds,
+    options,
+    template,
+  );
+
+  return {
+    document: buildAutoScheduleDocument(courseSeeds, sourceFileName, {
+      ...options,
+      parsedInstructions,
+    }),
+    instructionAiStatus,
+  };
+};
+
 const extractRawTextFromDocx = async (arrayBuffer: ArrayBuffer) => {
   const mammoth = (await import("mammoth")) as unknown as {
     extractRawText: (input: { arrayBuffer: ArrayBuffer }) => Promise<{ value: string }>;
@@ -972,6 +1642,450 @@ const extractRawTextFromDocx = async (arrayBuffer: ArrayBuffer) => {
   return result.value;
 };
 
+// ─── Grid PDF algılama ve ayrıştırma ──────────────────────────────────────────
+
+type PdfTI = { text: string; x: number; y: number };
+type PdfDayBand = { label: string; upper: number; lower: number };
+type GridEntry = {
+  classHint: string;
+  courseName: string;
+  instructorText: string | null;
+  locationText: string | null;
+};
+
+const DAY_LABEL_RE = /^(Pa|Sa|Ça|Pe|Cu)$/;
+const TIME_RANGE_RE = /^\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}$/;
+const PERIOD_RE = /^\d{1,2}$/;
+const GRID_SKIP_RE = /^(Grup\s+[A-Z]|Jap\d*|Rus\d*|Alm\d*|İng\d*|Ing\d*|TFVFa\d*)$/i;
+const GRID_ROOM_RE = /^(?:Lab(?:-?\d+)?|\d{2,3})$/i;
+const GRID_CLASS_RE = /seyahat\s+\d+/i;
+const GRID_METADATA_RE = /Ders Planı|aSc k12/i;
+const GRID_ROOM_LIST_RE = /^\d{2,3}(?:,\s*\d{2,3}|,\s*Lab)+/i;
+const TEACHER_TITLE_RE = /^Öğretmen\s+/i;
+const GRID_INSTRUCTOR_HINT_RE =
+  /\b(prof\.?|doç\.?|doc\.?|dr\.?|öğr\.?\s*gör\.?|ogr\.?\s*gor\.?|öğretim|ogretim|eleman|elm\.?|görevl|gorevl)\b/ui;
+const GRID_NAME_LIKE_RE = /^\p{Lu}[\p{L}.']+(?:\s+\p{Lu}[\p{L}.']+){1,4}$/u;
+const GRID_MERGED_ROOM_RE = /^(?<course>.*?\p{L}.*?)\s*(?<room>Lab(?:-?\d+)?|\d{2,3})$/u;
+const JOINABLE_FRAGMENT_STOPWORDS = new Set(["ve", "ile", "veya", "bir"]);
+
+const collapseAdjacentDuplicateWords = (value: string) => {
+  const words = value.split(/\s+/g).filter(Boolean);
+  const deduped: string[] = [];
+
+  for (const word of words) {
+    const previous = deduped[deduped.length - 1];
+    if (previous && normalizeCompactSearchText(previous) === normalizeCompactSearchText(word)) {
+      continue;
+    }
+    deduped.push(word);
+  }
+
+  return deduped.join(" ");
+};
+
+const cleanGridJoinedText = (value: string) =>
+  collapseAdjacentDuplicateWords(
+    value
+      .replace(/\s+'(?=\p{L})/gu, "'")
+      .replace(/\s+/g, " ")
+      .replace(/\b(\p{L}{4,})\s+([a-zçğıöşü]{1,8})\b/gu, (match, left: string, right: string) =>
+        JOINABLE_FRAGMENT_STOPWORDS.has(right.toLocaleLowerCase("tr")) ? match : `${left}${right}`,
+      )
+      .trim(),
+  );
+
+const looksLikeInstructorText = (value: string) => {
+  const trimmed = cleanGridJoinedText(value);
+
+  if (trimmed.length < 2) {
+    return false;
+  }
+
+  return GRID_INSTRUCTOR_HINT_RE.test(trimmed) || GRID_NAME_LIKE_RE.test(trimmed);
+};
+
+const cleanGridInstructorText = (value: string, courseName: string) => {
+  let cleaned = cleanGridJoinedText(value)
+    .replace(/\s+/g, " ")
+    .replace(/^(VIII|VII|VI|IV|V|III|II|I)\b\s*/u, "")
+    .trim();
+
+  if (courseName) {
+    const normalizedCourse = courseName.toLocaleLowerCase("tr");
+    const normalizedInstructor = cleaned.toLocaleLowerCase("tr");
+    if (normalizedInstructor.startsWith(normalizedCourse)) {
+      cleaned = cleaned.slice(courseName.length).trim();
+    }
+  }
+
+  return looksLikeInstructorText(cleaned) ? cleaned : null;
+};
+
+const isSkippableGridCourseText = (value: string) => {
+  const cleaned = cleanGridJoinedText(value);
+  return (
+    !cleaned ||
+    GRID_SKIP_RE.test(cleaned) ||
+    /^grup\s+[a-z]$/iu.test(cleaned) ||
+    GRID_CLASS_RE.test(cleaned) ||
+    GRID_METADATA_RE.test(cleaned)
+  );
+};
+
+const parseMergedGridCourseRoom = (value: string) => {
+  const cleaned = cleanGridJoinedText(value);
+  const match = GRID_MERGED_ROOM_RE.exec(cleaned);
+
+  if (!match?.groups) {
+    return null;
+  }
+
+  const courseName = cleanGridJoinedText(match.groups.course ?? "");
+  const locationText = (match.groups.room ?? "").trim();
+
+  if (!courseName || !locationText || isSkippableGridCourseText(courseName)) {
+    return null;
+  }
+
+  return {
+    courseName,
+    locationText,
+  };
+};
+
+const findNearestGridClassHint = (
+  items: PdfTI[],
+  anchorY: number,
+  minX: number,
+  maxX: number,
+) =>
+  items
+    .filter(
+      (item) =>
+        GRID_CLASS_RE.test(item.text) &&
+        item.x >= minX &&
+        item.x <= maxX &&
+        Math.abs(item.y - anchorY) <= 60,
+    )
+    .sort(
+      (left, right) =>
+        Math.abs(left.y - anchorY) - Math.abs(right.y - anchorY) ||
+        Math.abs(left.x - minX) - Math.abs(right.x - minX),
+    )[0]?.text ?? "";
+
+const clusterByX = (items: PdfTI[], tolerance: number) => {
+  const clusters: Array<{ center: number; items: PdfTI[] }> = [];
+
+  for (const item of [...items].sort((left, right) => left.x - right.x)) {
+    const lastCluster = clusters[clusters.length - 1];
+
+    if (!lastCluster || Math.abs(item.x - lastCluster.center) > tolerance) {
+      clusters.push({
+        center: item.x,
+        items: [item],
+      });
+      continue;
+    }
+
+    lastCluster.items.push(item);
+    lastCluster.center = Math.round(
+      lastCluster.items.reduce((sum, candidate) => sum + candidate.x, 0) / lastCluster.items.length,
+    );
+  }
+
+  return clusters;
+};
+
+const dedupeGridEntries = (entries: GridEntry[]) => {
+  const byKey = new Map<string, GridEntry>();
+
+  for (const entry of entries) {
+    const compactCourse = normalizeCompactSearchText(entry.courseName);
+
+    if (!compactCourse) {
+      continue;
+    }
+
+    const key = `${normalizeClassYear(entry.classHint)}::${compactCourse}`;
+    const existing = byKey.get(key);
+
+    if (!existing) {
+      byKey.set(key, entry);
+      continue;
+    }
+
+    const existingScore =
+      (existing.instructorText?.length ?? 0) + (existing.locationText?.length ?? 0) + existing.courseName.length;
+    const incomingScore =
+      (entry.instructorText?.length ?? 0) + (entry.locationText?.length ?? 0) + entry.courseName.length;
+
+    if (incomingScore > existingScore) {
+      byKey.set(key, entry);
+    }
+  }
+
+  return [...byKey.values()];
+};
+
+const buildGridDayBands = (items: PdfTI[]): PdfDayBand[] => {
+  const dayItems = items.filter((item) => DAY_LABEL_RE.test(item.text)).sort((left, right) => right.y - left.y);
+  const timeYs = items.filter((item) => TIME_RANGE_RE.test(item.text)).map((item) => item.y);
+
+  if (dayItems.length < 3 || timeYs.length === 0) {
+    return [];
+  }
+
+  const topBoundary = Math.max(...timeYs) + 12;
+
+  return dayItems.map((item, index, list) => ({
+    label: item.text,
+    upper: index === 0 ? topBoundary : (list[index - 1].y + item.y) / 2,
+    lower: index === list.length - 1 ? 0 : (item.y + list[index + 1].y) / 2,
+  }));
+};
+
+const buildGridText = (entries: GridEntry[]) => {
+  const dedupedEntries = dedupeGridEntries(entries);
+
+  if (dedupedEntries.length === 0) {
+    return null;
+  }
+
+  const lines = ["Sınıf | Ders | Öğretim Üyesi | Derslik"];
+
+  for (const entry of dedupedEntries) {
+    lines.push(
+      `${entry.classHint || "-"} | ${entry.courseName} | ${entry.instructorText || "-"} | ${entry.locationText || "-"}`,
+    );
+  }
+
+  return lines.join("\n");
+};
+
+const extractRoomScheduleEntries = (items: PdfTI[]): GridEntry[] => {
+  const pageClassHint =
+    [...items.filter((item) => GRID_CLASS_RE.test(item.text))]
+      .sort((left, right) => right.y - left.y)
+      .find((item) => !TEACHER_TITLE_RE.test(item.text))
+      ?.text ?? "";
+
+  if (!pageClassHint) {
+    return [];
+  }
+
+  const dayBands = buildGridDayBands(items);
+  const minContentX = Math.max(...items.filter((item) => DAY_LABEL_RE.test(item.text)).map((item) => item.x)) + 40;
+  const entries: GridEntry[] = [];
+
+  for (const band of dayBands) {
+    const rowItems = items.filter(
+      (item) =>
+        item.x >= minContentX &&
+        item.y < band.upper &&
+        item.y >= band.lower &&
+        !DAY_LABEL_RE.test(item.text) &&
+        !PERIOD_RE.test(item.text) &&
+        !TIME_RANGE_RE.test(item.text) &&
+        !GRID_CLASS_RE.test(item.text) &&
+        !GRID_ROOM_LIST_RE.test(item.text) &&
+        !GRID_METADATA_RE.test(item.text) &&
+        item.text !== "Öğle Arası",
+    );
+
+    const roomAnchors = rowItems.filter((item) => GRID_ROOM_RE.test(item.text));
+    if (roomAnchors.length === 0) {
+      continue;
+    }
+
+    const xClusters = clusterByX(roomAnchors, 36);
+
+    for (let clusterIndex = 0; clusterIndex < xClusters.length; clusterIndex += 1) {
+      const cluster = xClusters[clusterIndex];
+      const previousCluster = xClusters[clusterIndex - 1];
+      const nextCluster = xClusters[clusterIndex + 1];
+      const leftBoundary = previousCluster
+        ? (previousCluster.center + cluster.center) / 2 + 8
+        : cluster.center - 40;
+      const rightBoundary = nextCluster ? (cluster.center + nextCluster.center) / 2 : cluster.center + 170;
+      const anchorsInCluster = [...cluster.items].sort((left, right) => right.y - left.y);
+
+      for (let anchorIndex = 0; anchorIndex < anchorsInCluster.length; anchorIndex += 1) {
+        const anchor = anchorsInCluster[anchorIndex];
+        const higherAnchor = anchorsInCluster[anchorIndex - 1];
+        const upperBoundary = higherAnchor ? higherAnchor.y - 2 : band.upper;
+
+        const sameLineItems = rowItems
+          .filter(
+            (item) =>
+              !GRID_ROOM_RE.test(item.text) &&
+              !GRID_SKIP_RE.test(item.text) &&
+              !GRID_CLASS_RE.test(item.text) &&
+              item.x > anchor.x + 4 &&
+              item.x < rightBoundary + 28 &&
+              Math.abs(item.y - anchor.y) <= 3,
+          )
+          .sort((left, right) => left.x - right.x);
+
+        const instructorParts = sameLineItems.filter((item) => looksLikeInstructorText(item.text)).map((item) => item.text);
+        const sameLineCourseParts = sameLineItems
+          .filter((item) => !looksLikeInstructorText(item.text) && item.text.trim().length > 1)
+          .map((item) => item.text);
+
+        const courseName = cleanGridJoinedText(
+          [
+            ...rowItems
+              .filter(
+                (item) =>
+                  !GRID_ROOM_RE.test(item.text) &&
+                  !GRID_SKIP_RE.test(item.text) &&
+                  item.y > anchor.y &&
+                  item.y <= upperBoundary &&
+                  item.x >= leftBoundary &&
+                  item.x < rightBoundary,
+              )
+              .sort((left, right) => right.y - left.y || left.x - right.x)
+              .map((item) => item.text),
+            ...sameLineCourseParts,
+          ].join(" "),
+        );
+
+        if (!courseName || isSkippableGridCourseText(courseName)) {
+          continue;
+        }
+
+        entries.push({
+          classHint: pageClassHint,
+          courseName,
+          instructorText: cleanGridInstructorText(instructorParts.join(" "), courseName),
+          locationText: anchor.text,
+        });
+      }
+    }
+  }
+
+  return entries;
+};
+
+const extractTeacherScheduleEntries = (items: PdfTI[]): GridEntry[] => {
+  const teacherName =
+    items
+      .filter((item) => TEACHER_TITLE_RE.test(item.text))
+      .sort((left, right) => right.y - left.y)[0]
+      ?.text.replace(TEACHER_TITLE_RE, "")
+      .trim() ?? "";
+
+  if (!teacherName) {
+    return [];
+  }
+
+  const dayBands = buildGridDayBands(items);
+  const entries: GridEntry[] = [];
+
+  for (const band of dayBands) {
+    const bandItems = items.filter((item) => item.y < band.upper && item.y >= band.lower);
+    const mergedEntries = bandItems
+      .filter(
+        (item) =>
+          !GRID_ROOM_RE.test(item.text) &&
+          !GRID_CLASS_RE.test(item.text) &&
+          !GRID_METADATA_RE.test(item.text) &&
+          !DAY_LABEL_RE.test(item.text) &&
+          !PERIOD_RE.test(item.text) &&
+          !TIME_RANGE_RE.test(item.text) &&
+          !TEACHER_TITLE_RE.test(item.text) &&
+          item.text !== "Öğle Arası",
+      )
+      .map((item) => {
+        const parsed = parseMergedGridCourseRoom(item.text);
+
+        if (!parsed) {
+          return null;
+        }
+
+        const classHint = findNearestGridClassHint(items, item.y, item.x - 12, item.x + 120);
+
+        return {
+          classHint,
+          courseName: parsed.courseName,
+          instructorText: teacherName,
+          locationText: parsed.locationText,
+        } satisfies GridEntry;
+      })
+      .filter(Boolean);
+
+    for (const entry of mergedEntries) {
+      if (entry) {
+        entries.push(entry);
+      }
+    }
+
+    const rowAnchors = items
+      .filter((item) => GRID_ROOM_RE.test(item.text) && item.y < band.upper && item.y >= band.lower)
+      .sort((left, right) => left.x - right.x);
+
+    for (let anchorIndex = 0; anchorIndex < rowAnchors.length; anchorIndex += 1) {
+      const anchor = rowAnchors[anchorIndex];
+      const previousAnchor = rowAnchors[anchorIndex - 1];
+      const leftBoundary = previousAnchor ? previousAnchor.x + 10 : anchor.x - 120;
+
+      const courseName = cleanGridJoinedText(
+        items
+          .filter(
+            (item) =>
+              !GRID_ROOM_RE.test(item.text) &&
+              !GRID_CLASS_RE.test(item.text) &&
+              !GRID_METADATA_RE.test(item.text) &&
+              !DAY_LABEL_RE.test(item.text) &&
+              !PERIOD_RE.test(item.text) &&
+              !TIME_RANGE_RE.test(item.text) &&
+              !TEACHER_TITLE_RE.test(item.text) &&
+              item.text !== "Öğle Arası" &&
+              item.x > leftBoundary &&
+              item.x < anchor.x - 2 &&
+              item.y <= anchor.y + 4 &&
+              item.y >= anchor.y - 18,
+          )
+          .sort((left, right) => right.y - left.y || left.x - right.x)
+          .map((item) => item.text)
+          .join(" "),
+      );
+
+      if (!courseName || isSkippableGridCourseText(courseName)) {
+        continue;
+      }
+
+      const classHint = findNearestGridClassHint(items, anchor.y, leftBoundary - 10, anchor.x + 20);
+
+      entries.push({
+        classHint,
+        courseName,
+        instructorText: teacherName,
+        locationText: anchor.text,
+      });
+    }
+  }
+
+  return entries;
+};
+
+const extractGridPageFromItems = (items: PdfTI[]): string | null => {
+  const dayBands = buildGridDayBands(items);
+  if (dayBands.length === 0) {
+    return null;
+  }
+
+  const entries = TEACHER_TITLE_RE.test(items.find((item) => TEACHER_TITLE_RE.test(item.text))?.text ?? "")
+    ? extractTeacherScheduleEntries(items)
+    : extractRoomScheduleEntries(items);
+
+  return buildGridText(entries);
+};
+
+export const __testables = {
+  extractGridPageFromItems,
+  inferClassYear,
+};
+
 const extractRawTextFromPdf = async (arrayBuffer: ArrayBuffer) => {
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
   const worker = await import("pdfjs-dist/legacy/build/pdf.worker.min.mjs?url");
@@ -980,39 +2094,57 @@ const extractRawTextFromPdf = async (arrayBuffer: ArrayBuffer) => {
   const pdf = await pdfjs.getDocument({
     data: new Uint8Array(arrayBuffer),
   }).promise;
-  const pages: string[] = [];
+  const pageTexts: string[] = [];
 
   for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
     const page = await pdf.getPage(pageNumber);
     const textContent = await page.getTextContent();
+
+    const items: PdfTI[] = [];
+    for (const item of textContent.items as Array<{ str?: string; transform?: number[] }>) {
+      const text = item.str?.trim();
+      if (!text) continue;
+      items.push({
+        text,
+        x: Math.round(item.transform?.[4] ?? 0),
+        y: Math.round(item.transform?.[5] ?? 0),
+      });
+    }
+
+    items.sort((left, right) => right.y - left.y || left.x - right.x);
+
+    // Izgara PDF tespiti: gün etiketleri var mı?
+    const dayItems = items.filter((i) => DAY_LABEL_RE.test(i.text));
+    if (dayItems.length >= 3) {
+      const gridText = extractGridPageFromItems(items);
+      if (gridText) {
+        pageTexts.push(gridText);
+        continue;
+      }
+    }
+
+    // Standart: Y koordinatına göre satır gruplama
     const rows: string[] = [];
     let currentY: number | null = null;
     let currentRow: string[] = [];
 
-    for (const item of textContent.items as Array<{ str?: string; transform?: number[] }>) {
-      if (!item.str) {
-        continue;
-      }
-
-      const y: number = item.transform?.[5] ?? currentY ?? 0;
-
-      if (currentY !== null && Math.abs(y - currentY) > 4) {
+    for (const item of items) {
+      if (currentY !== null && Math.abs(item.y - currentY) > 4) {
         rows.push(currentRow.join(" ").trim());
         currentRow = [];
       }
-
-      currentRow.push(item.str);
-      currentY = y;
+      currentRow.push(item.text);
+      currentY = item.y;
     }
 
     if (currentRow.length > 0) {
       rows.push(currentRow.join(" ").trim());
     }
 
-    pages.push(rows.filter(Boolean).join("\n"));
+    pageTexts.push(rows.filter(Boolean).join("\n"));
   }
 
-  return pages.join("\n");
+  return pageTexts.join("\n");
 };
 
 /**
@@ -1031,6 +2163,15 @@ const resolveCourseSeedsWithAI = async (
 ): Promise<{ seeds: CourseSeed[]; aiStatus: { used: boolean; seedCount: number; error: string | null; provider?: string } }> => {
   const profile = options.profile ? normalizeSchoolProfile(options.profile) : null;
   const apiKey = profile?.geminiApiKey?.trim();
+  const ruleBasedSeeds = resolveSeedsFromSource({ profile, rawText, genericSheets });
+  const hasStructuredGridOutput = /Sınıf\s*\|\s*Ders\s*\|\s*Öğretim Üyesi\s*\|\s*Derslik/u.test(rawText);
+
+  if (hasStructuredGridOutput && ruleBasedSeeds.length > 0) {
+    return {
+      seeds: ruleBasedSeeds,
+      aiStatus: { used: false, seedCount: 0, error: null },
+    };
+  }
 
   if (options.useAI && apiKey) {
     // AI'a hem yapılandırılmış Excel tablosunu hem ham metni gönder
@@ -1046,7 +2187,6 @@ const resolveCourseSeedsWithAI = async (
     }
 
     // AI sonuç üretemedi — rule-based'e düş, hatayı bildir
-    const ruleBasedSeeds = resolveSeedsFromSource({ profile, rawText, genericSheets });
     return {
       seeds: ruleBasedSeeds,
       aiStatus: {
@@ -1058,7 +2198,6 @@ const resolveCourseSeedsWithAI = async (
   }
 
   // AI devre dışı veya API key yok — sadece rule-based
-  const ruleBasedSeeds = resolveSeedsFromSource({ profile, rawText, genericSheets });
   return {
     seeds: ruleBasedSeeds,
     aiStatus: { used: false, seedCount: 0, error: null },
@@ -1099,11 +2238,13 @@ export const importScheduleFromFile = async (
       const aiNote = aiStatus.used
         ? ` ✓ ${aiStatus.provider ?? "AI"} ile ${aiStatus.seedCount} ders tanındı.`
         : "";
+      const scheduleResult = await buildAutoScheduleDocumentWithAI(courseSeeds, file.name, options);
       return {
-        document: buildAutoScheduleDocument(courseSeeds, file.name, options),
+        document: scheduleResult.document,
         mode: "auto-generated",
         message: `${file.name} ders programından otomatik sınav taslağı üretildi.${aiNote}`,
         aiStatus,
+        instructionAiStatus: scheduleResult.instructionAiStatus,
       };
     }
   }
@@ -1123,11 +2264,13 @@ export const importScheduleFromFile = async (
     const aiNote = aiStatus.used
       ? ` ✓ ${aiStatus.provider ?? "AI"} ile ${aiStatus.seedCount} ders tanındı.`
       : "";
+    const scheduleResult = await buildAutoScheduleDocumentWithAI(courseSeeds, file.name, options);
     return {
-      document: buildAutoScheduleDocument(courseSeeds, file.name, options),
+      document: scheduleResult.document,
       mode: "auto-generated",
       message: `${file.name} Word içeriğinden otomatik sınav taslağı üretildi.${aiNote}`,
       aiStatus,
+      instructionAiStatus: scheduleResult.instructionAiStatus,
     };
   }
 
@@ -1142,11 +2285,13 @@ export const importScheduleFromFile = async (
     const aiNote = aiStatus.used
       ? ` ✓ ${aiStatus.provider ?? "AI"} ile ${aiStatus.seedCount} ders tanındı.`
       : "";
+    const scheduleResult = await buildAutoScheduleDocumentWithAI(courseSeeds, file.name, options);
     return {
-      document: buildAutoScheduleDocument(courseSeeds, file.name, options),
+      document: scheduleResult.document,
       mode: "auto-generated",
       message: `${file.name} PDF içeriğinden otomatik sınav taslağı üretildi.${aiNote}`,
       aiStatus,
+      instructionAiStatus: scheduleResult.instructionAiStatus,
     };
   }
 

@@ -22,6 +22,7 @@ interface ProfilePanelProps {
   onDeleteProfile: (profileId: string) => { ok: boolean; message: string };
   onLoadDocument: (document: ScheduleDocument, message: string) => void;
   onStatus: (tone: "info" | "error", message: string) => void;
+  onDraftProfileChange?: (profile: SchoolProfile) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -151,6 +152,7 @@ export const ProfilePanel = ({
   onDeleteProfile,
   onLoadDocument,
   onStatus,
+  onDraftProfileChange,
 }: ProfilePanelProps) => {
   const [wizardState, setWizardState] = useState<WizardState>(() => toWizardState(activeProfile));
   const [step, setStep] = useState(0);
@@ -163,6 +165,10 @@ export const ProfilePanel = ({
     setWizardState(toWizardState(activeProfile));
     setStep(0);
   }, [activeProfile]);
+
+  useEffect(() => {
+    onDraftProfileChange?.(buildProfileFromWizard(wizardState));
+  }, [onDraftProfileChange, wizardState]);
 
   // -------------------------------------------------------------------------
   // State helpers

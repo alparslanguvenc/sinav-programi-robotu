@@ -281,11 +281,15 @@ export const Toolbar = ({
         <div className="toolbar__prompt-body">
           <textarea
             className="toolbar__prompt-input"
+            aria-label="AI talimatı"
             value={userPrompt}
             rows={2}
             placeholder="örn. Fizik sınavı Cuma olmasın · 1. ve 2. sınıf aynı güne denk gelmesin · Dr. Kaya'nın sınavları Çarşamba sabah..."
             onChange={(e) => onUserPromptChange(e.target.value)}
           />
+          <span style={{ color: "var(--muted)", fontSize: "0.84rem" }}>
+            Talimatlar yalnızca "Dosya yükle" ve "Yeniden oluştur" işlemleri sırasında uygulanır.
+          </span>
           {userPrompt.trim() && (
             <button
               type="button"

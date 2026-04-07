@@ -19,11 +19,13 @@ jobs:
             script: package:mac
             artifact_name: sinav-programi-robotu-macos
             glob: "release/*.dmg"
+            normalized_name: Sinav-Programi-Robotu-macOS.dmg
           - os: windows-latest
             label: Windows EXE
             script: package:win
             artifact_name: sinav-programi-robotu-windows
             glob: "release/*.exe"
+            normalized_name: Sinav-Programi-Robotu-Windows-Setup.exe
 
     steps:
       - name: Checkout
@@ -44,11 +46,22 @@ jobs:
       - name: Build installer
         run: npm run ${{ matrix.script }}
 
+      - name: Normalize installer filename
+        shell: bash
+        run: |
+          shopt -s nullglob
+          files=(${{ matrix.glob }})
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No installer matched ${{ matrix.glob }}"
+            exit 1
+          fi
+          mv "${files[0]}" "release/${{ matrix.normalized_name }}"
+
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
-          path: ${{ matrix.glob }}
+          path: release/${{ matrix.normalized_name }}
           if-no-files-found: error
 
   release:
@@ -76,8 +89,8 @@ jobs:
 
             | Platform | İndir |
             |---|---|
-            | **macOS** | `.dmg` dosyasını indir → aç → uygulamayı Applications klasörüne sürükle |
-            | **Windows** | `.exe` dosyasını indir → çalıştır → kurulum sihirbazını takip et |
+            | **macOS** | [Sinav-Programi-Robotu-macOS.dmg](https://github.com/${{ github.repository }}/releases/latest/download/Sinav-Programi-Robotu-macOS.dmg) |
+            | **Windows** | [Sinav-Programi-Robotu-Windows-Setup.exe](https://github.com/${{ github.repository }}/releases/latest/download/Sinav-Programi-Robotu-Windows-Setup.exe) |
 
             > API anahtarı almak için: [console.groq.com](https://console.groq.com) (ücretsiz)
           files: |
